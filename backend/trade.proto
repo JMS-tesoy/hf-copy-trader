@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+message TradeSignal {
+  int32 master_id = 1;
+  string symbol = 2;
+  string action = 3; // "BUY" or "SELL"
+  double price = 4;
+}

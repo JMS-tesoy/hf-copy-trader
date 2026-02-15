@@ -1,0 +1,392 @@
+require('dotenv').config();
+const express = require('express');
+const Redis = require('ioredis');
+const protobuf = require('protobufjs');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const crypto = require('crypto');
+const { Pool } = require('pg');
+
+// --- Configuration ---
+const API_KEY = process.env.API_KEY || 'changeme-generate-a-real-key';
+const VALID_ACTIONS = ['BUY', 'SELL'];
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+
+// --- FIX: Force connection to 127.0.0.1 (IPv4) ---
+const redis = new Redis({
+  host: "127.0.0.1",
+  port: 6379
+});
+
+// --- PostgreSQL connection ---
+const pg = new Pool({
+  host: process.env.PG_HOST || '127.0.0.1',
+  port: parseInt(process.env.PG_PORT) || 5432,
+  database: process.env.PG_DATABASE || 'copy_trading',
+  user: process.env.PG_USER || 'postgres',
+  password: process.env.PG_PASSWORD || 'postgres',
+});
+
+// --- Create all tables on startup ---
+pg.query(`
+  CREATE TABLE IF NOT EXISTS trade_audit_log (
+    id SERIAL PRIMARY KEY,
+    master_id INTEGER NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    action VARCHAR(4) NOT NULL,
+    price DOUBLE PRECISION NOT NULL,
+    received_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS masters (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    api_key VARCHAR(64) UNIQUE NOT NULL,
+    status VARCHAR(10) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    balance DOUBLE PRECISION DEFAULT 10000,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    master_id INTEGER REFERENCES masters(id) ON DELETE CASCADE,
+    lot_multiplier DOUBLE PRECISION DEFAULT 1.0,
+    status VARCHAR(10) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, master_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS copied_trades (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    master_id INTEGER NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    action VARCHAR(4) NOT NULL,
+    price DOUBLE PRECISION NOT NULL,
+    lot_size DOUBLE PRECISION DEFAULT 0.01,
+    status VARCHAR(10) DEFAULT 'open',
+    copied_at TIMESTAMPTZ DEFAULT NOW()
+  );
+`).then(() => {
+  console.log('✅ PostgreSQL tables ready');
+}).catch((err) => {
+  console.error('⚠️  PostgreSQL unavailable:', err.message);
+});
+
+// Load Protobuf format
+const root = protobuf.loadSync("trade.proto");
+const TradeSignal = root.lookupType("TradeSignal");
+
+// --- API Key Authentication Middleware ---
+function requireApiKey(req, res, next) {
+  const key = req.headers['x-api-key'];
+  if (!key || key !== API_KEY) {
+    return res.status(401).json({ error: 'Invalid or missing API key' });
+  }
+  next();
+}
+
+// ========================================
+// TRADE ENDPOINTS
+// ========================================
+
+// POST /api/trade — Broadcast a trade signal
+app.post('/api/trade', requireApiKey, async (req, res) => {
+  const { master_id, symbol, action, price } = req.body;
+
+  if (master_id == null || !symbol || !action || price == null) {
+    return res.status(400).json({ error: 'Missing fields: master_id, symbol, action, price are required' });
+  }
+
+  const parsedMasterId = Number(master_id);
+  const parsedPrice = Number(price);
+
+  if (!Number.isInteger(parsedMasterId) || parsedMasterId <= 0) {
+    return res.status(400).json({ error: 'master_id must be a positive integer' });
+  }
+  if (!Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+    return res.status(400).json({ error: 'price must be a positive number' });
+  }
+  if (typeof symbol !== 'string' || symbol.trim().length === 0) {
+    return res.status(400).json({ error: 'symbol must be a non-empty string' });
+  }
+
+  const upperAction = String(action).toUpperCase();
+  if (!VALID_ACTIONS.includes(upperAction)) {
+    return res.status(400).json({ error: `action must be one of: ${VALID_ACTIONS.join(', ')}` });
+  }
+
+  const payload = {
+    master_id: parsedMasterId,
+    symbol: symbol.trim(),
+    action: upperAction,
+    price: parsedPrice,
+  };
+  const errMsg = TradeSignal.verify(payload);
+  if (errMsg) {
+    return res.status(400).json({ error: `Protobuf validation failed: ${errMsg}` });
+  }
+
+  const messageBuffer = TradeSignal.encode(TradeSignal.create(payload)).finish();
+
+  redis.publish('channel:global_trades', messageBuffer).catch((err) => {
+    console.error('❌ Redis publish failed:', err.message);
+  });
+
+  redis.lpush('list:recent_trades', JSON.stringify(payload));
+  redis.ltrim('list:recent_trades', 0, 49);
+
+  pg.query(
+    'INSERT INTO trade_audit_log (master_id, symbol, action, price) VALUES ($1, $2, $3, $4)',
+    [payload.master_id, payload.symbol, payload.action, payload.price]
+  ).catch((err) => {
+    console.error('⚠️  Audit log insert failed:', err.message);
+  });
+
+  // Auto-copy to subscribed users
+  try {
+    const subs = await pg.query(
+      'SELECT user_id, lot_multiplier FROM subscriptions WHERE master_id = $1 AND status = $2',
+      [parsedMasterId, 'active']
+    );
+    for (const sub of subs.rows) {
+      pg.query(
+        'INSERT INTO copied_trades (user_id, master_id, symbol, action, price, lot_size) VALUES ($1, $2, $3, $4, $5, $6)',
+        [sub.user_id, parsedMasterId, payload.symbol, payload.action, payload.price, 0.01 * sub.lot_multiplier]
+      ).catch(() => {});
+    }
+  } catch (err) {
+    console.error('⚠️  Copy trades failed:', err.message);
+  }
+
+  console.log(`📡 Broadcast: ${payload.action} ${payload.symbol} from Master #${payload.master_id}`);
+  res.json({ status: "OK" });
+});
+
+// GET /api/trades/latest — Recent trades for EA sync
+app.get('/api/trades/latest', requireApiKey, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+  const trades = await redis.lrange('list:recent_trades', 0, limit - 1);
+  res.json(trades.map((t) => JSON.parse(t)));
+});
+
+// ========================================
+// MASTER ENDPOINTS
+// ========================================
+
+// GET /api/masters — List all masters with stats
+app.get('/api/masters', async (req, res) => {
+  try {
+    const result = await pg.query(`
+      SELECT m.*,
+        COALESCE(t.signal_count, 0) AS signal_count,
+        t.last_signal_at
+      FROM masters m
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS signal_count, MAX(received_at) AS last_signal_at
+        FROM trade_audit_log GROUP BY master_id
+      ) t ON t.master_id = m.id
+      ORDER BY m.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/masters — Create a master
+app.post('/api/masters', requireApiKey, async (req, res) => {
+  const { name } = req.body;
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+  try {
+    const apiKey = crypto.randomBytes(32).toString('hex');
+    const result = await pg.query(
+      'INSERT INTO masters (name, api_key) VALUES ($1, $2) RETURNING *',
+      [name.trim(), apiKey]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/masters/:id — Update master
+app.put('/api/masters/:id', requireApiKey, async (req, res) => {
+  const { name, status } = req.body;
+  const { id } = req.params;
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (name) { fields.push(`name = $${idx++}`); values.push(name.trim()); }
+    if (status && ['active', 'paused'].includes(status)) { fields.push(`status = $${idx++}`); values.push(status); }
+
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+    values.push(id);
+    const result = await pg.query(
+      `UPDATE masters SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Master not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/masters/:id — Remove master
+app.delete('/api/masters/:id', requireApiKey, async (req, res) => {
+  try {
+    const result = await pg.query('DELETE FROM masters WHERE id = $1 RETURNING id', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Master not found' });
+    res.json({ status: 'deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========================================
+// USER ENDPOINTS
+// ========================================
+
+// GET /api/users — List all users
+app.get('/api/users', async (req, res) => {
+  try {
+    const result = await pg.query('SELECT id, name, email, balance, created_at FROM users ORDER BY created_at DESC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/users — Create user
+app.post('/api/users', async (req, res) => {
+  const { name, email } = req.body;
+  if (!name || !email) {
+    return res.status(400).json({ error: 'name and email are required' });
+  }
+  try {
+    const result = await pg.query(
+      'INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id, name, email, balance, created_at',
+      [name.trim(), email.trim().toLowerCase()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/users/:id — User profile with subscriptions
+app.get('/api/users/:id', async (req, res) => {
+  try {
+    const user = await pg.query('SELECT id, name, email, balance, created_at FROM users WHERE id = $1', [req.params.id]);
+    if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+    const subs = await pg.query(`
+      SELECT s.*, m.name AS master_name, m.status AS master_status
+      FROM subscriptions s
+      JOIN masters m ON m.id = s.master_id
+      WHERE s.user_id = $1
+    `, [req.params.id]);
+
+    res.json({ ...user.rows[0], subscriptions: subs.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/users/:id — Update user
+app.put('/api/users/:id', async (req, res) => {
+  const { name, email } = req.body;
+  const { id } = req.params;
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (name) { fields.push(`name = $${idx++}`); values.push(name.trim()); }
+    if (email) { fields.push(`email = $${idx++}`); values.push(email.trim().toLowerCase()); }
+
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+    values.push(id);
+    const result = await pg.query(
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, balance, created_at`,
+      values
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========================================
+// SUBSCRIPTION ENDPOINTS
+// ========================================
+
+// POST /api/users/:id/subscribe — Subscribe to a master
+app.post('/api/users/:id/subscribe', async (req, res) => {
+  const { master_id, lot_multiplier } = req.body;
+  if (!master_id) return res.status(400).json({ error: 'master_id is required' });
+  try {
+    const result = await pg.query(
+      'INSERT INTO subscriptions (user_id, master_id, lot_multiplier) VALUES ($1, $2, $3) RETURNING *',
+      [req.params.id, master_id, lot_multiplier || 1.0]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Already subscribed' });
+    if (err.code === '23503') return res.status(404).json({ error: 'User or master not found' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/users/:id/subscribe/:masterId — Unsubscribe
+app.delete('/api/users/:id/subscribe/:masterId', async (req, res) => {
+  try {
+    const result = await pg.query(
+      'DELETE FROM subscriptions WHERE user_id = $1 AND master_id = $2 RETURNING id',
+      [req.params.id, req.params.masterId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json({ status: 'unsubscribed' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/users/:id/trades — Copied trades for a user
+app.get('/api/users/:id/trades', async (req, res) => {
+  try {
+    const result = await pg.query(
+      'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT 100',
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Run on Port 4000
+app.listen(4000, () => {
+  console.log(`✅ Broker API running on Port 4000`);
+});
