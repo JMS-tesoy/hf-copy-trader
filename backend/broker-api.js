@@ -15,19 +15,26 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// --- FIX: Force connection to 127.0.0.1 (IPv4) ---
+// --- Redis with reconnect strategy ---
 const redis = new Redis({
   host: "127.0.0.1",
-  port: 6379
+  port: 6379,
+  retryStrategy: (times) => Math.min(times * 100, 3000),
+  maxRetriesPerRequest: null
 });
 
-// --- PostgreSQL connection ---
+// --- PostgreSQL connection pool (sized for 10K users across 3 cluster instances) ---
+// PostgreSQL default max_connections = 100
+// 3 PM2 instances × 30 pool connections = 90 (leaves 10 for admin/monitoring)
 const pg = new Pool({
   host: process.env.PG_HOST || '127.0.0.1',
   port: parseInt(process.env.PG_PORT) || 5432,
   database: process.env.PG_DATABASE || 'copy_trading',
   user: process.env.PG_USER || 'postgres',
   password: process.env.PG_PASSWORD || 'postgres',
+  max: 30,                    // 30 connections per instance (× 3 instances = 90 total)
+  idleTimeoutMillis: 30000,   // Close idle connections after 30s
+  connectionTimeoutMillis: 5000,  // Fail fast if pool is exhausted
 });
 
 // --- Create all tables on startup ---
@@ -78,10 +85,20 @@ pg.query(`
     status VARCHAR(10) DEFAULT 'open',
     copied_at TIMESTAMPTZ DEFAULT NOW()
   );
+
+
+  -- Indexes for 10K+ user scale
+  CREATE INDEX IF NOT EXISTS idx_trade_audit_master ON trade_audit_log(master_id);
+  CREATE INDEX IF NOT EXISTS idx_trade_audit_time ON trade_audit_log(received_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_master ON subscriptions(master_id) WHERE status = 'active';
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_copied_trades_user ON copied_trades(user_id, copied_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_copied_trades_master ON copied_trades(master_id);
+  CREATE INDEX IF NOT EXISTS idx_masters_status ON masters(status);
 `).then(() => {
-  console.log('✅ PostgreSQL tables ready');
+  console.log('PostgreSQL tables + indexes ready');
 }).catch((err) => {
-  console.error('⚠️  PostgreSQL unavailable:', err.message);
+  console.error('PostgreSQL unavailable:', err.message);
 });
 
 // Load Protobuf format

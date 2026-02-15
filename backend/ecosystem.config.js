@@ -1,16 +1,25 @@
 module.exports = {
   apps: [
     {
-      name: "worker-swarm",
+      name: "worker-server",
       script: "./worker-server.js",
-      instances: 1,         // ws library binds to a port — cluster mode causes port conflicts
-      exec_mode: "fork"
+      instances: 1,
+      exec_mode: "fork",
+      node_args: "--max-old-space-size=1024",
+      env: {
+        NODE_ENV: "production",
+        UV_THREADPOOL_SIZE: 16          // Increase libuv thread pool for I/O
+      }
     },
     {
       name: "broker-api",
       script: "./broker-api.js",
-      instances: 1,         // Uses 1 CPU Core for API/Redis
-      exec_mode: "fork"
+      instances: 3,
+      exec_mode: "cluster",            // 3 cluster instances across 3 CPUs
+      node_args: "--max-old-space-size=512",
+      env: {
+        NODE_ENV: "production"
+      }
     }
   ]
 };
