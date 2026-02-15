@@ -11,11 +11,12 @@
 
 //--- Input Parameters
 input string   ServerURL   = "http://127.0.0.1:4000"; // Broker API URL
+input string   ApiKey      = "changeme-generate-a-real-key"; // API key (x-api-key)
 input int      MasterID    = 1;                        // Master trader ID
 input int      PollMs      = 500;                      // Poll interval (ms)
 
 //--- Track known positions to detect new ones
-int      g_knownTickets[];
+ulong    g_knownTickets[];
 int      g_knownCount = 0;
 datetime g_lastCheck  = 0;
 
@@ -69,6 +70,44 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
+//| Trade transaction event — instant detection for new positions     |
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+{
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+
+   if(trans.deal_entry != DEAL_ENTRY_IN && trans.deal_entry != DEAL_ENTRY_INOUT)
+      return;
+
+   ulong positionTicket = trans.position;
+   if(positionTicket == 0)
+      return;
+
+   if(IsKnownTicket(positionTicket))
+      return;
+
+   if(!PositionSelectByTicket(positionTicket))
+      return;
+
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   double price  = PositionGetDouble(POSITION_PRICE_OPEN);
+   long   type   = PositionGetInteger(POSITION_TYPE);
+
+   string action = (type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+
+   bool sent = SendTradeSignal(symbol, action, price);
+   if(sent)
+      Print("TradeSender: SENT ", action, " ", symbol, " @ ", price, " [position:", positionTicket, "]");
+   else
+      Print("TradeSender: FAILED to send ", action, " ", symbol);
+
+   AddKnownTicket(positionTicket);
+}
+
+//+------------------------------------------------------------------+
 //| Snapshot all current open positions into known list               |
 //+------------------------------------------------------------------+
 void SnapshotPositions()
@@ -79,7 +118,7 @@ void SnapshotPositions()
    for(int i = 0; i < g_knownCount; i++)
    {
       ulong ticket = PositionGetTicket(i);
-      g_knownTickets[i] = (int)ticket;
+      g_knownTickets[i] = ticket;
    }
 
    Print("TradeSender: Snapshot ", g_knownCount, " existing positions");
@@ -98,7 +137,7 @@ void CheckForNewPositions()
       if(ticket == 0) continue;
 
       // Skip if already known
-      if(IsKnownTicket((int)ticket)) continue;
+      if(IsKnownTicket(ticket)) continue;
 
       // New position detected — read its details
       if(!PositionSelectByTicket(ticket)) continue;
@@ -118,14 +157,14 @@ void CheckForNewPositions()
          Print("TradeSender: FAILED to send ", action, " ", symbol);
 
       // Add to known list regardless (avoid spam on failure)
-      AddKnownTicket((int)ticket);
+      AddKnownTicket(ticket);
    }
 }
 
 //+------------------------------------------------------------------+
 //| Check if ticket is in our known list                              |
 //+------------------------------------------------------------------+
-bool IsKnownTicket(int ticket)
+bool IsKnownTicket(ulong ticket)
 {
    for(int i = 0; i < g_knownCount; i++)
    {
@@ -137,7 +176,7 @@ bool IsKnownTicket(int ticket)
 //+------------------------------------------------------------------+
 //| Add ticket to known list                                          |
 //+------------------------------------------------------------------+
-void AddKnownTicket(int ticket)
+void AddKnownTicket(ulong ticket)
 {
    g_knownCount++;
    ArrayResize(g_knownTickets, g_knownCount);
@@ -163,6 +202,8 @@ bool SendTradeSignal(string symbol, string action, double price)
    char   postData[];
    char   result[];
    string headers = "Content-Type: application/json\r\n";
+   if(StringLen(ApiKey) > 0)
+      headers += "X-API-Key: " + ApiKey + "\r\n";
    string resultHeaders;
    int    timeout = 5000; // 5 second timeout
 
