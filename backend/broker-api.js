@@ -8,8 +8,8 @@ const crypto = require('crypto');
 const { Pool } = require('pg');
 
 // --- Configuration ---
-const API_KEY = process.env.API_KEY || 'changeme-generate-a-real-key';
-const VALID_ACTIONS = ['BUY', 'SELL'];
+const ADMIN_API_KEY = process.env.API_KEY || 'changeme-generate-a-real-key';
+const VALID_ACTIONS = ['BUY', 'SELL', 'CLOSE_BUY', 'CLOSE_SELL', 'MODIFY'];
 
 const app = express();
 app.use(cors());
@@ -105,22 +105,51 @@ pg.query(`
 const root = protobuf.loadSync("trade.proto");
 const TradeSignal = root.lookupType("TradeSignal");
 
-// --- API Key Authentication Middleware ---
-function requireApiKey(req, res, next) {
+// --- Admin API Key Middleware (for master CRUD, admin endpoints) ---
+function requireAdminKey(req, res, next) {
   const key = req.headers['x-api-key'];
-  if (!key || key !== API_KEY) {
-    return res.status(401).json({ error: 'Invalid or missing API key' });
+  if (!key || key !== ADMIN_API_KEY) {
+    return res.status(401).json({ error: 'Invalid or missing admin API key' });
   }
   next();
+}
+
+// --- Per-Master API Key Middleware (for trade endpoint) ---
+// Validates the x-api-key against the master's unique key in the database
+async function requireMasterKey(req, res, next) {
+  const key = req.headers['x-api-key'];
+  if (!key) {
+    return res.status(401).json({ error: 'Missing API key' });
+  }
+
+  // Also accept admin key for backward compatibility
+  if (key === ADMIN_API_KEY) {
+    return next();
+  }
+
+  try {
+    const result = await pg.query(
+      'SELECT id FROM masters WHERE api_key = $1 AND status = $2',
+      [key, 'active']
+    );
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid API key or master is paused' });
+    }
+    // Attach master_id from the key lookup so the endpoint can use it
+    req.authenticatedMasterId = result.rows[0].id;
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Auth check failed' });
+  }
 }
 
 // ========================================
 // TRADE ENDPOINTS
 // ========================================
 
-// POST /api/trade — Broadcast a trade signal
-app.post('/api/trade', requireApiKey, async (req, res) => {
-  const { master_id, symbol, action, price } = req.body;
+// POST /api/trade — Broadcast a trade signal (open, close, or modify)
+app.post('/api/trade', requireMasterKey, async (req, res) => {
+  const { master_id, symbol, action, price, ticket, sl, tp } = req.body;
 
   if (master_id == null || !symbol || !action || price == null) {
     return res.status(400).json({ error: 'Missing fields: master_id, symbol, action, price are required' });
@@ -132,6 +161,12 @@ app.post('/api/trade', requireApiKey, async (req, res) => {
   if (!Number.isInteger(parsedMasterId) || parsedMasterId <= 0) {
     return res.status(400).json({ error: 'master_id must be a positive integer' });
   }
+
+  // If authenticated via master key, verify master_id matches
+  if (req.authenticatedMasterId && req.authenticatedMasterId !== parsedMasterId) {
+    return res.status(403).json({ error: 'API key does not match master_id' });
+  }
+
   if (!Number.isFinite(parsedPrice) || parsedPrice <= 0) {
     return res.status(400).json({ error: 'price must be a positive number' });
   }
@@ -144,12 +179,19 @@ app.post('/api/trade', requireApiKey, async (req, res) => {
     return res.status(400).json({ error: `action must be one of: ${VALID_ACTIONS.join(', ')}` });
   }
 
+  const isClose = upperAction.startsWith('CLOSE_');
+  const isModify = upperAction === 'MODIFY';
+
   const payload = {
     master_id: parsedMasterId,
     symbol: symbol.trim(),
     action: upperAction,
     price: parsedPrice,
+    ticket: ticket ? Number(ticket) : 0,
+    sl: sl ? Number(sl) : 0,
+    tp: tp ? Number(tp) : 0,
   };
+
   const errMsg = TradeSignal.verify(payload);
   if (errMsg) {
     return res.status(400).json({ error: `Protobuf validation failed: ${errMsg}` });
@@ -158,7 +200,7 @@ app.post('/api/trade', requireApiKey, async (req, res) => {
   const messageBuffer = TradeSignal.encode(TradeSignal.create(payload)).finish();
 
   redis.publish('channel:global_trades', messageBuffer).catch((err) => {
-    console.error('❌ Redis publish failed:', err.message);
+    console.error('Redis publish failed:', err.message);
   });
 
   redis.lpush('list:recent_trades', JSON.stringify(payload));
@@ -168,31 +210,47 @@ app.post('/api/trade', requireApiKey, async (req, res) => {
     'INSERT INTO trade_audit_log (master_id, symbol, action, price) VALUES ($1, $2, $3, $4)',
     [payload.master_id, payload.symbol, payload.action, payload.price]
   ).catch((err) => {
-    console.error('⚠️  Audit log insert failed:', err.message);
+    console.error('Audit log insert failed:', err.message);
   });
 
-  // Auto-copy to subscribed users
-  try {
-    const subs = await pg.query(
-      'SELECT user_id, lot_multiplier FROM subscriptions WHERE master_id = $1 AND status = $2',
-      [parsedMasterId, 'active']
-    );
-    for (const sub of subs.rows) {
-      pg.query(
-        'INSERT INTO copied_trades (user_id, master_id, symbol, action, price, lot_size) VALUES ($1, $2, $3, $4, $5, $6)',
-        [sub.user_id, parsedMasterId, payload.symbol, payload.action, payload.price, 0.01 * sub.lot_multiplier]
-      ).catch(() => {});
+  // Handle close signals — mark copied_trades as closed
+  if (isClose) {
+    const baseAction = upperAction === 'CLOSE_BUY' ? 'BUY' : 'SELL';
+    try {
+      await pg.query(
+        `UPDATE copied_trades SET status = 'closed'
+         WHERE master_id = $1 AND symbol = $2 AND action = $3 AND status = 'open'`,
+        [parsedMasterId, payload.symbol, baseAction]
+      );
+    } catch (err) {
+      console.error('Close copied trades failed:', err.message);
     }
-  } catch (err) {
-    console.error('⚠️  Copy trades failed:', err.message);
   }
 
-  console.log(`📡 Broadcast: ${payload.action} ${payload.symbol} from Master #${payload.master_id}`);
+  // Handle open signals — auto-copy to subscribed users
+  if (!isClose && !isModify) {
+    try {
+      const subs = await pg.query(
+        'SELECT user_id, lot_multiplier FROM subscriptions WHERE master_id = $1 AND status = $2',
+        [parsedMasterId, 'active']
+      );
+      for (const sub of subs.rows) {
+        pg.query(
+          'INSERT INTO copied_trades (user_id, master_id, symbol, action, price, lot_size) VALUES ($1, $2, $3, $4, $5, $6)',
+          [sub.user_id, parsedMasterId, payload.symbol, payload.action, payload.price, 0.01 * sub.lot_multiplier]
+        ).catch(() => {});
+      }
+    } catch (err) {
+      console.error('Copy trades failed:', err.message);
+    }
+  }
+
+  console.log(`Broadcast: ${payload.action} ${payload.symbol} from Master #${payload.master_id}`);
   res.json({ status: "OK" });
 });
 
 // GET /api/trades/latest — Recent trades for EA sync
-app.get('/api/trades/latest', requireApiKey, async (req, res) => {
+app.get('/api/trades/latest', requireAdminKey, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 10, 50);
   const trades = await redis.lrange('list:recent_trades', 0, limit - 1);
   res.json(trades.map((t) => JSON.parse(t)));
@@ -223,7 +281,7 @@ app.get('/api/masters', async (req, res) => {
 });
 
 // POST /api/masters — Create a master
-app.post('/api/masters', requireApiKey, async (req, res) => {
+app.post('/api/masters', requireAdminKey, async (req, res) => {
   const { name } = req.body;
   if (!name || typeof name !== 'string' || name.trim().length === 0) {
     return res.status(400).json({ error: 'name is required' });
@@ -241,7 +299,7 @@ app.post('/api/masters', requireApiKey, async (req, res) => {
 });
 
 // PUT /api/masters/:id — Update master
-app.put('/api/masters/:id', requireApiKey, async (req, res) => {
+app.put('/api/masters/:id', requireAdminKey, async (req, res) => {
   const { name, status } = req.body;
   const { id } = req.params;
   try {
@@ -267,7 +325,7 @@ app.put('/api/masters/:id', requireApiKey, async (req, res) => {
 });
 
 // DELETE /api/masters/:id — Remove master
-app.delete('/api/masters/:id', requireApiKey, async (req, res) => {
+app.delete('/api/masters/:id', requireAdminKey, async (req, res) => {
   try {
     const result = await pg.query('DELETE FROM masters WHERE id = $1 RETURNING id', [req.params.id]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Master not found' });

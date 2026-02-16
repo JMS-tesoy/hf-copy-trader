@@ -1,15 +1,15 @@
 //+------------------------------------------------------------------+
 //|                                               TradeReceiver.mq5  |
 //|                   Copier EA — receives signals via lws2mql WS    |
-//|              Connects to worker-server, parses JSON, executes    |
+//|   v2: Handles BUY, SELL, CLOSE_BUY, CLOSE_SELL, MODIFY signals  |
 //+------------------------------------------------------------------+
 #property copyright "CopyTrader"
-#property version   "1.00"
+#property version   "2.00"
 #property strict
 
 #include <Trade\Trade.mqh>
-#include "..\\Include\\Websocket.mqh"
-#include "..\\Include\\JSONParser.mqh"
+#include "..\Include\Websocket.mqh"
+#include "..\Include\JSONParser.mqh"
 
 //--- Input Parameters
 input string   WSHost       = "127.0.0.1";  // WebSocket server host
@@ -27,6 +27,17 @@ bool       g_connected = false;
 //--- Trade execution
 CTrade     g_trade;
 
+//--- Position mapping: master signal → local ticket
+struct PositionMap
+{
+   int    masterID;
+   string symbol;
+   string action;   // "BUY" or "SELL" (the opening action)
+   ulong  localTicket;
+};
+PositionMap g_posMap[];
+int         g_posMapCount = 0;
+
 //--- Duplicate filter
 struct RecentSignal
 {
@@ -43,7 +54,7 @@ int          g_recentCount = 0;
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("TradeReceiver: Starting...");
+   Print("TradeReceiver v2: Starting...");
    Print("TradeReceiver: WS=", WSHost, ":", WSPort,
          " Lot=", LotSize, " Magic=", MagicNumber);
 
@@ -144,6 +155,9 @@ void ProcessSignal(string &json)
    string symbol   = parser.GetString("symbol", "");
    string action   = parser.GetString("action", "");
    double price    = parser.GetDouble("price", 0);
+   long   ticket   = parser.GetLong("ticket", 0);
+   double sl       = parser.GetDouble("sl", 0);
+   double tp       = parser.GetDouble("tp", 0);
 
    if(symbol == "" || action == "")
    {
@@ -153,7 +167,8 @@ void ProcessSignal(string &json)
 
    Print("TradeReceiver: Signal received: ",
          action, " ", symbol, " @ ", price,
-         " from Master #", masterID);
+         " from Master #", masterID,
+         " ticket=", ticket, " sl=", sl, " tp=", tp);
 
    // Duplicate check
    if(IsDuplicate(masterID, symbol, action))
@@ -162,17 +177,33 @@ void ProcessSignal(string &json)
       return;
    }
 
-   // Execute the trade
-   ExecuteTrade(symbol, action, price);
+   // Route by action type
+   if(action == "BUY" || action == "SELL")
+   {
+      ExecuteOpen(masterID, symbol, action, price);
+   }
+   else if(action == "CLOSE_BUY" || action == "CLOSE_SELL")
+   {
+      ExecuteClose(masterID, symbol, action);
+   }
+   else if(action == "MODIFY")
+   {
+      ExecuteModify(masterID, symbol, sl, tp);
+   }
+   else
+   {
+      Print("TradeReceiver: Unknown action: ", action);
+      return;
+   }
 
    // Record for duplicate filtering
    AddRecent(masterID, symbol, action);
 }
 
 //+------------------------------------------------------------------+
-//| Execute a trade based on signal                                   |
+//| Execute OPEN trade (BUY or SELL)                                  |
 //+------------------------------------------------------------------+
-void ExecuteTrade(string symbol, string action, double signalPrice)
+void ExecuteOpen(int masterID, string symbol, string action, double signalPrice)
 {
    // Ensure symbol is available in Market Watch
    if(!SymbolSelect(symbol, true))
@@ -201,28 +232,25 @@ void ExecuteTrade(string symbol, string action, double signalPrice)
    double lot     = MathMax(minLot, MathMin(maxLot, LotSize));
    lot = MathFloor(lot / lotStep) * lotStep;
 
+   // Use comment to tag position for later identification
+   string comment = "CT:" + IntegerToString(masterID);
+
    bool result = false;
 
    if(action == "BUY")
-   {
-      result = g_trade.Buy(lot, symbol, ask, 0, 0,
-               "CopyTrader Recv");
-   }
+      result = g_trade.Buy(lot, symbol, ask, 0, 0, comment);
    else if(action == "SELL")
-   {
-      result = g_trade.Sell(lot, symbol, bid, 0, 0,
-               "CopyTrader Recv");
-   }
-   else
-   {
-      Print("TradeReceiver: Unknown action: ", action);
-      return;
-   }
+      result = g_trade.Sell(lot, symbol, bid, 0, 0, comment);
 
    if(result)
    {
+      ulong localTicket = g_trade.ResultOrder();
       Print("TradeReceiver: EXECUTED ", action, " ", lot, " ",
-            symbol, " @ ", (action == "BUY" ? ask : bid));
+            symbol, " @ ", (action == "BUY" ? ask : bid),
+            " localTicket=", localTicket);
+
+      // Save mapping for close/modify
+      AddPositionMap(masterID, symbol, action, localTicket);
    }
    else
    {
@@ -234,7 +262,150 @@ void ExecuteTrade(string symbol, string action, double signalPrice)
 }
 
 //+------------------------------------------------------------------+
-//| Check for duplicate signal within time window                     |
+//| Execute CLOSE trade                                               |
+//+------------------------------------------------------------------+
+void ExecuteClose(int masterID, string symbol, string action)
+{
+   // CLOSE_BUY means close a BUY position, CLOSE_SELL means close a SELL
+   string openAction = (action == "CLOSE_BUY") ? "BUY" : "SELL";
+
+   // Try to find via position map first
+   ulong localTicket = FindLocalTicket(masterID, symbol, openAction);
+
+   if(localTicket > 0 && PositionSelectByTicket(localTicket))
+   {
+      if(g_trade.PositionClose(localTicket))
+      {
+         Print("TradeReceiver: CLOSED ", openAction, " ", symbol,
+               " localTicket=", localTicket, " (via map)");
+         RemovePositionMap(localTicket);
+         return;
+      }
+      else
+      {
+         Print("TradeReceiver: Close failed for ticket ", localTicket,
+               " Error=", GetLastError(), " RetCode=", g_trade.ResultRetcode());
+      }
+   }
+
+   // Fallback: scan all positions by magic + symbol + comment
+   string commentTag = "CT:" + IntegerToString(masterID);
+   long   posType = (openAction == "BUY") ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+
+   int total = PositionsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong t = PositionGetTicket(i);
+      if(t == 0) continue;
+      if(!PositionSelectByTicket(t)) continue;
+
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if(PositionGetInteger(POSITION_TYPE) != posType) continue;
+
+      // Check comment for master ID match
+      string posComment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(posComment, commentTag) < 0) continue;
+
+      if(g_trade.PositionClose(t))
+      {
+         Print("TradeReceiver: CLOSED ", openAction, " ", symbol,
+               " localTicket=", t, " (via scan)");
+         RemovePositionMap(t);
+         return;
+      }
+   }
+
+   Print("TradeReceiver: No matching position to close for ",
+         openAction, " ", symbol, " master=", masterID);
+}
+
+//+------------------------------------------------------------------+
+//| Execute MODIFY (SL/TP update)                                     |
+//+------------------------------------------------------------------+
+void ExecuteModify(int masterID, string symbol, double sl, double tp)
+{
+   string commentTag = "CT:" + IntegerToString(masterID);
+   bool   found = false;
+
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong t = PositionGetTicket(i);
+      if(t == 0) continue;
+      if(!PositionSelectByTicket(t)) continue;
+
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      string posComment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(posComment, commentTag) < 0) continue;
+
+      // Modify SL/TP
+      if(g_trade.PositionModify(t, sl, tp))
+      {
+         Print("TradeReceiver: MODIFIED ", symbol, " ticket=", t,
+               " SL=", sl, " TP=", tp);
+         found = true;
+      }
+      else
+      {
+         Print("TradeReceiver: Modify failed ticket=", t,
+               " Error=", GetLastError(),
+               " RetCode=", g_trade.ResultRetcode());
+      }
+   }
+
+   if(!found)
+   {
+      Print("TradeReceiver: No matching position to modify for ",
+            symbol, " master=", masterID);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Position map management                                           |
+//+------------------------------------------------------------------+
+void AddPositionMap(int masterID, string symbol, string action, ulong localTicket)
+{
+   g_posMapCount++;
+   ArrayResize(g_posMap, g_posMapCount);
+   g_posMap[g_posMapCount - 1].masterID    = masterID;
+   g_posMap[g_posMapCount - 1].symbol      = symbol;
+   g_posMap[g_posMapCount - 1].action      = action;
+   g_posMap[g_posMapCount - 1].localTicket = localTicket;
+}
+
+ulong FindLocalTicket(int masterID, string symbol, string action)
+{
+   for(int i = 0; i < g_posMapCount; i++)
+   {
+      if(g_posMap[i].masterID == masterID &&
+         g_posMap[i].symbol == symbol &&
+         g_posMap[i].action == action)
+      {
+         return g_posMap[i].localTicket;
+      }
+   }
+   return 0;
+}
+
+void RemovePositionMap(ulong localTicket)
+{
+   for(int i = 0; i < g_posMapCount; i++)
+   {
+      if(g_posMap[i].localTicket == localTicket)
+      {
+         g_posMap[i] = g_posMap[g_posMapCount - 1];
+         g_posMapCount--;
+         ArrayResize(g_posMap, g_posMapCount);
+         return;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Duplicate filter                                                   |
 //+------------------------------------------------------------------+
 bool IsDuplicate(int masterID, string symbol, string action)
 {
@@ -255,9 +426,6 @@ bool IsDuplicate(int masterID, string symbol, string action)
    return false;
 }
 
-//+------------------------------------------------------------------+
-//| Add signal to recent list                                         |
-//+------------------------------------------------------------------+
 void AddRecent(int masterID, string symbol, string action)
 {
    // Clean old entries
@@ -271,9 +439,6 @@ void AddRecent(int masterID, string symbol, string action)
    g_recent[g_recentCount - 1].time     = TimeCurrent();
 }
 
-//+------------------------------------------------------------------+
-//| Remove expired entries from recent list                           |
-//+------------------------------------------------------------------+
 void CleanRecent()
 {
    datetime now = TimeCurrent();

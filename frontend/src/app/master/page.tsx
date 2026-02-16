@@ -2,9 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Navbar from '@/components/Navbar';
-
-const API = 'http://localhost:4000/api';
-const API_KEY = 'changeme-generate-a-real-key';
+import { API, adminHeaders } from '@/lib/api';
 
 interface Master {
   id: number;
@@ -44,7 +42,7 @@ export default function MasterPage() {
     try {
       await fetch(`${API}/masters`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
+        headers: adminHeaders(),
         body: JSON.stringify({ name: newName.trim() }),
       });
       setNewName('');
@@ -59,7 +57,7 @@ export default function MasterPage() {
     try {
       await fetch(`${API}/masters/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
+        headers: adminHeaders(),
         body: JSON.stringify(data),
       });
       setEditId(null);
@@ -74,7 +72,7 @@ export default function MasterPage() {
     try {
       await fetch(`${API}/masters/${id}`, {
         method: 'DELETE',
-        headers: { 'x-api-key': API_KEY },
+        headers: adminHeaders(),
       });
       fetchMasters();
     } catch {

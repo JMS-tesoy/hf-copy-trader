@@ -9,7 +9,10 @@ const protoJSON = {
         "master_id": { "type": "int32", "id": 1 },
         "symbol": { "type": "string", "id": 2 },
         "action": { "type": "string", "id": 3 },
-        "price": { "type": "double", "id": 4 }
+        "price": { "type": "double", "id": 4 },
+        "ticket": { "type": "int64", "id": 5 },
+        "sl": { "type": "double", "id": 6 },
+        "tp": { "type": "double", "id": 7 }
       }
     }
   }
@@ -21,7 +24,7 @@ const TradeSignal = root.lookupType("TradeSignal");
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
-const WS_URL = 'ws://127.0.0.1:8080';
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://127.0.0.1:8080';
 const RECONNECT_DELAY = 3000;
 
 export const useTradeSocket = (onTrade: (trade: any) => void) => {

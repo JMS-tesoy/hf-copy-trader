@@ -2,9 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Navbar from '@/components/Navbar';
-
-const API = 'http://localhost:4000/api';
-const API_KEY = 'changeme-generate-a-real-key';
+import { API } from '@/lib/api';
 
 interface User {
   id: number;

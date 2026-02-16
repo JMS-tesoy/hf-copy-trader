@@ -3,6 +3,9 @@ syntax = "proto3";
 message TradeSignal {
   int32 master_id = 1;
   string symbol = 2;
-  string action = 3; // "BUY" or "SELL"
+  string action = 3;     // "BUY", "SELL", "CLOSE_BUY", "CLOSE_SELL", "MODIFY"
   double price = 4;
+  int64 ticket = 5;      // Position ticket for close/modify
+  double sl = 6;         // Stop loss (for MODIFY)
+  double tp = 7;         // Take profit (for MODIFY)
 }
