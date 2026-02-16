@@ -1,5 +1,6 @@
 node_modules/
 .env
+.env.local
 .claude/
 *.log
 .next/
@@ -8,6 +9,5 @@ CLAUDE.md
 .mcp.json
 plan.md
 nul
-.mq4
-.mq5
 README.md
+.env.example
