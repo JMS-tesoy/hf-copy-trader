@@ -11,3 +11,5 @@ plan.md
 nul
 README.md
 .env.example
+*.mq4
+*.mq5
