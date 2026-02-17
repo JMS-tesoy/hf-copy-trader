@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTradeSocket } from '@/lib/useTradeSocket';
+import { API } from '@/lib/api';
 import { StatCard } from '@/components/ui/StatCard';
 import { SignalCard } from '@/components/trade/SignalCard';
 import { LiveFeed } from '@/components/trade/LiveFeed';
@@ -29,10 +30,29 @@ export default function Home() {
   const [history, setHistory] = useState<Trade[]>([]);
   const [symbolFilter, setSymbolFilter] = useState<string>('all');
 
+  // Load historical trades on mount
+  useEffect(() => {
+    fetch(`${API}/trades/history?limit=50`)
+      .then((res) => res.json())
+      .then((data) => {
+        const trades: Trade[] = data.map((t: any) => ({
+          master_id: t.master_id,
+          symbol: t.symbol,
+          action: t.action,
+          price: t.price,
+          timestamp: new Date(t.received_at),
+        }));
+        setHistory(trades);
+        if (trades.length > 0) setLastTrade(trades[0]);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Live trades via WebSocket
   useTradeSocket((trade: any) => {
     const newTrade: Trade = { ...trade, timestamp: new Date() };
     setLastTrade(newTrade);
-    setHistory((prev) => [newTrade, ...prev].slice(0, 50));
+    setHistory((prev) => [newTrade, ...prev].slice(0, 200));
   });
 
   const stats = useMemo(() => {
@@ -100,7 +120,7 @@ export default function Home() {
     <div className="max-w-7xl mx-auto space-y-6">
       {/* Stats Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total Trades" sub="Last 50 signals" icon={Activity}>
+        <StatCard label="Total Trades" sub="Historical + live" icon={Activity}>
           {stats.totalTrades}
         </StatCard>
         <StatCard label="Active Masters" sub="Unique senders" icon={Crown}>

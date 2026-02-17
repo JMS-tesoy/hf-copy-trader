@@ -256,6 +256,20 @@ app.get('/api/trades/latest', requireAdminKey, async (req, res) => {
   res.json(trades.map((t) => JSON.parse(t)));
 });
 
+// GET /api/trades/history — Historical trades from audit log
+app.get('/api/trades/history', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+    const result = await pg.query(
+      'SELECT master_id, symbol, action, price, received_at FROM trade_audit_log ORDER BY received_at DESC LIMIT $1',
+      [limit]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch trade history' });
+  }
+});
+
 // ========================================
 // MASTER ENDPOINTS
 // ========================================

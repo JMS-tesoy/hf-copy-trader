@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTradeSocket } from '@/lib/useTradeSocket';
+import { API } from '@/lib/api';
 import { Card } from '@/components/ui/Card';
 import { StatCard } from '@/components/ui/StatCard';
 import { Badge } from '@/components/ui/Badge';
@@ -25,9 +26,27 @@ export default function AnalyticsPage() {
   const [symbolFilter, setSymbolFilter] = useState<string>('all');
   const [timeRange, setTimeRange] = useState<string>('all');
 
+  // Load historical trades on mount
+  useEffect(() => {
+    fetch(`${API}/trades/history?limit=500`)
+      .then((res) => res.json())
+      .then((data) => {
+        const trades: Trade[] = data.map((t: any) => ({
+          master_id: t.master_id,
+          symbol: t.symbol,
+          action: t.action,
+          price: t.price,
+          timestamp: new Date(t.received_at),
+        }));
+        setHistory(trades);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Live trades via WebSocket
   useTradeSocket((trade: any) => {
     const newTrade: Trade = { ...trade, timestamp: new Date() };
-    setHistory((prev) => [newTrade, ...prev].slice(0, 200));
+    setHistory((prev) => [newTrade, ...prev].slice(0, 500));
   });
 
   // Time-filtered trades
