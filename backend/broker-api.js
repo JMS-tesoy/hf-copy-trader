@@ -43,7 +43,7 @@ pg.query(`
     id SERIAL PRIMARY KEY,
     master_id INTEGER NOT NULL,
     symbol VARCHAR(20) NOT NULL,
-    action VARCHAR(4) NOT NULL,
+    action VARCHAR(12) NOT NULL,
     price DOUBLE PRECISION NOT NULL,
     received_at TIMESTAMPTZ DEFAULT NOW()
   );
@@ -79,13 +79,22 @@ pg.query(`
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     master_id INTEGER NOT NULL,
     symbol VARCHAR(20) NOT NULL,
-    action VARCHAR(4) NOT NULL,
+    action VARCHAR(12) NOT NULL,
     price DOUBLE PRECISION NOT NULL,
+    ticket BIGINT,
+    sl DOUBLE PRECISION,
+    tp DOUBLE PRECISION,
     lot_size DOUBLE PRECISION DEFAULT 0.01,
     status VARCHAR(10) DEFAULT 'open',
     copied_at TIMESTAMPTZ DEFAULT NOW()
   );
 
+  -- Migrations for existing installs
+  ALTER TABLE trade_audit_log ALTER COLUMN action TYPE VARCHAR(12);
+  ALTER TABLE copied_trades ALTER COLUMN action TYPE VARCHAR(12);
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS ticket BIGINT;
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS sl DOUBLE PRECISION;
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS tp DOUBLE PRECISION;
 
   -- Indexes for 10K+ user scale
   CREATE INDEX IF NOT EXISTS idx_trade_audit_master ON trade_audit_log(master_id);
@@ -94,6 +103,7 @@ pg.query(`
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
   CREATE INDEX IF NOT EXISTS idx_copied_trades_user ON copied_trades(user_id, copied_at DESC);
   CREATE INDEX IF NOT EXISTS idx_copied_trades_master ON copied_trades(master_id);
+  CREATE INDEX IF NOT EXISTS idx_copied_trades_master_ticket ON copied_trades(master_id, ticket) WHERE status = 'open';
   CREATE INDEX IF NOT EXISTS idx_masters_status ON masters(status);
 `).then(() => {
   console.log('PostgreSQL tables + indexes ready');
@@ -181,15 +191,28 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
 
   const isClose = upperAction.startsWith('CLOSE_');
   const isModify = upperAction === 'MODIFY';
+  const hasTicket = ticket !== undefined && ticket !== null && ticket !== '';
+  const parsedTicket = hasTicket ? Number(ticket) : null;
+
+  if (hasTicket && (!Number.isInteger(parsedTicket) || parsedTicket <= 0)) {
+    return res.status(400).json({ error: 'ticket must be a positive integer' });
+  }
+
+  if ((isClose || isModify) && !hasTicket) {
+    return res.status(400).json({ error: 'ticket is required for CLOSE/ MODIFY actions' });
+  }
+
+  const parsedSl = sl !== undefined && sl !== null ? Number(sl) : 0;
+  const parsedTp = tp !== undefined && tp !== null ? Number(tp) : 0;
 
   const payload = {
     master_id: parsedMasterId,
     symbol: symbol.trim(),
     action: upperAction,
     price: parsedPrice,
-    ticket: ticket ? Number(ticket) : 0,
-    sl: sl ? Number(sl) : 0,
-    tp: tp ? Number(tp) : 0,
+    ticket: hasTicket ? parsedTicket : 0,
+    sl: parsedSl,
+    tp: parsedTp,
   };
 
   const errMsg = TradeSignal.verify(payload);
@@ -217,13 +240,39 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
   if (isClose) {
     const baseAction = upperAction === 'CLOSE_BUY' ? 'BUY' : 'SELL';
     try {
-      await pg.query(
+      const closeResult = await pg.query(
         `UPDATE copied_trades SET status = 'closed'
-         WHERE master_id = $1 AND symbol = $2 AND action = $3 AND status = 'open'`,
-        [parsedMasterId, payload.symbol, baseAction]
+         WHERE master_id = $1 AND ticket = $2 AND status = 'open'`,
+        [parsedMasterId, parsedTicket]
       );
+
+      if (closeResult.rowCount === 0) {
+        await pg.query(
+          `UPDATE copied_trades SET status = 'closed'
+           WHERE master_id = $1 AND symbol = $2 AND action = $3 AND status = 'open'
+             AND (ticket IS NULL OR ticket = 0)`,
+          [parsedMasterId, payload.symbol, baseAction]
+        );
+      }
     } catch (err) {
       console.error('Close copied trades failed:', err.message);
+    }
+  }
+
+  // Handle modify signals — update SL/TP for matched trade
+  if (isModify) {
+    try {
+      const modifyResult = await pg.query(
+        `UPDATE copied_trades SET sl = $1, tp = $2
+         WHERE master_id = $3 AND ticket = $4 AND status = 'open'`,
+        [payload.sl, payload.tp, parsedMasterId, parsedTicket]
+      );
+
+      if (modifyResult.rowCount === 0) {
+        console.warn(`Modify ignored: no open copied trade for master_id=${parsedMasterId}, ticket=${parsedTicket}`);
+      }
+    } catch (err) {
+      console.error('Modify copied trades failed:', err.message);
     }
   }
 
@@ -236,8 +285,18 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
       );
       for (const sub of subs.rows) {
         pg.query(
-          'INSERT INTO copied_trades (user_id, master_id, symbol, action, price, lot_size) VALUES ($1, $2, $3, $4, $5, $6)',
-          [sub.user_id, parsedMasterId, payload.symbol, payload.action, payload.price, 0.01 * sub.lot_multiplier]
+          'INSERT INTO copied_trades (user_id, master_id, symbol, action, price, ticket, sl, tp, lot_size) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+          [
+            sub.user_id,
+            parsedMasterId,
+            payload.symbol,
+            payload.action,
+            payload.price,
+            hasTicket ? parsedTicket : null,
+            payload.sl,
+            payload.tp,
+            0.01 * sub.lot_multiplier,
+          ]
         ).catch(() => {});
       }
     } catch (err) {
@@ -275,17 +334,22 @@ app.get('/api/trades/history', async (req, res) => {
 // ========================================
 
 // GET /api/masters — List all masters with stats
-app.get('/api/masters', async (req, res) => {
+app.get('/api/masters', requireAdminKey, async (req, res) => {
   try {
     const result = await pg.query(`
       SELECT m.*,
         COALESCE(t.signal_count, 0) AS signal_count,
-        t.last_signal_at
+        t.last_signal_at,
+        COALESCE(s.subscriber_count, 0) AS subscriber_count
       FROM masters m
       LEFT JOIN (
         SELECT master_id, COUNT(*) AS signal_count, MAX(received_at) AS last_signal_at
         FROM trade_audit_log GROUP BY master_id
       ) t ON t.master_id = m.id
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS subscriber_count
+        FROM subscriptions WHERE status = 'active' GROUP BY master_id
+      ) s ON s.master_id = m.id
       ORDER BY m.created_at DESC
     `);
     res.json(result.rows);
@@ -349,12 +413,41 @@ app.delete('/api/masters/:id', requireAdminKey, async (req, res) => {
   }
 });
 
+// GET /api/masters/:id/trades — Trade history for a specific master
+app.get('/api/masters/:id/trades', requireAdminKey, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const result = await pg.query(
+      'SELECT master_id, symbol, action, price, received_at FROM trade_audit_log WHERE master_id = $1 ORDER BY received_at DESC LIMIT $2',
+      [req.params.id, limit]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/masters/:id/regenerate-key — Regenerate API key
+app.put('/api/masters/:id/regenerate-key', requireAdminKey, async (req, res) => {
+  try {
+    const apiKey = crypto.randomBytes(32).toString('hex');
+    const result = await pg.query(
+      'UPDATE masters SET api_key = $1 WHERE id = $2 RETURNING *',
+      [apiKey, req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Master not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========================================
 // USER ENDPOINTS
 // ========================================
 
 // GET /api/users — List all users
-app.get('/api/users', async (req, res) => {
+app.get('/api/users', requireAdminKey, async (req, res) => {
   try {
     const result = await pg.query('SELECT id, name, email, balance, created_at FROM users ORDER BY created_at DESC');
     res.json(result.rows);
@@ -364,7 +457,7 @@ app.get('/api/users', async (req, res) => {
 });
 
 // POST /api/users — Create user
-app.post('/api/users', async (req, res) => {
+app.post('/api/users', requireAdminKey, async (req, res) => {
   const { name, email } = req.body;
   if (!name || !email) {
     return res.status(400).json({ error: 'name and email are required' });
@@ -382,7 +475,7 @@ app.post('/api/users', async (req, res) => {
 });
 
 // GET /api/users/:id — User profile with subscriptions
-app.get('/api/users/:id', async (req, res) => {
+app.get('/api/users/:id', requireAdminKey, async (req, res) => {
   try {
     const user = await pg.query('SELECT id, name, email, balance, created_at FROM users WHERE id = $1', [req.params.id]);
     if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -401,7 +494,7 @@ app.get('/api/users/:id', async (req, res) => {
 });
 
 // PUT /api/users/:id — Update user
-app.put('/api/users/:id', async (req, res) => {
+app.put('/api/users/:id', requireAdminKey, async (req, res) => {
   const { name, email } = req.body;
   const { id } = req.params;
   try {
@@ -427,12 +520,23 @@ app.put('/api/users/:id', async (req, res) => {
   }
 });
 
+// DELETE /api/users/:id — Delete user (cascades subscriptions + copied_trades)
+app.delete('/api/users/:id', requireAdminKey, async (req, res) => {
+  try {
+    const result = await pg.query('DELETE FROM users WHERE id = $1 RETURNING id', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ status: 'deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========================================
 // SUBSCRIPTION ENDPOINTS
 // ========================================
 
 // POST /api/users/:id/subscribe — Subscribe to a master
-app.post('/api/users/:id/subscribe', async (req, res) => {
+app.post('/api/users/:id/subscribe', requireAdminKey, async (req, res) => {
   const { master_id, lot_multiplier } = req.body;
   if (!master_id) return res.status(400).json({ error: 'master_id is required' });
   try {
@@ -449,7 +553,7 @@ app.post('/api/users/:id/subscribe', async (req, res) => {
 });
 
 // DELETE /api/users/:id/subscribe/:masterId — Unsubscribe
-app.delete('/api/users/:id/subscribe/:masterId', async (req, res) => {
+app.delete('/api/users/:id/subscribe/:masterId', requireAdminKey, async (req, res) => {
   try {
     const result = await pg.query(
       'DELETE FROM subscriptions WHERE user_id = $1 AND master_id = $2 RETURNING id',
@@ -462,14 +566,62 @@ app.delete('/api/users/:id/subscribe/:masterId', async (req, res) => {
   }
 });
 
-// GET /api/users/:id/trades — Copied trades for a user
-app.get('/api/users/:id/trades', async (req, res) => {
+// PUT /api/subscriptions/:id — Update subscription (lot_multiplier, status)
+app.put('/api/subscriptions/:id', requireAdminKey, async (req, res) => {
+  const { lot_multiplier, status } = req.body;
+  const { id } = req.params;
   try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (lot_multiplier !== undefined) {
+      const parsed = Number(lot_multiplier);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return res.status(400).json({ error: 'lot_multiplier must be a positive number' });
+      }
+      fields.push(`lot_multiplier = $${idx++}`);
+      values.push(parsed);
+    }
+    if (status && ['active', 'paused'].includes(status)) {
+      fields.push(`status = $${idx++}`);
+      values.push(status);
+    }
+
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+    values.push(id);
     const result = await pg.query(
-      'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT 100',
-      [req.params.id]
+      `UPDATE subscriptions SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
     );
-    res.json(result.rows);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/users/:id/trades — Copied trades for a user (with pagination)
+app.get('/api/users/:id/trades', requireAdminKey, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+
+    const [tradesResult, countResult] = await Promise.all([
+      pg.query(
+        'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT $2 OFFSET $3',
+        [req.params.id, limit, offset]
+      ),
+      pg.query('SELECT COUNT(*)::int AS count FROM copied_trades WHERE user_id = $1', [req.params.id])
+    ]);
+
+    res.json({
+      trades: tradesResult.rows,
+      total: countResult.rows[0].count,
+      limit,
+      offset
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -10,6 +10,7 @@ const variants: Record<string, string> = {
   open: 'bg-blue-500/10 text-blue-500',
   closed: 'bg-gray-200 dark:bg-slate-700 text-gray-500 dark:text-slate-400',
   neutral: 'bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400',
+  danger: 'bg-red-500/10 text-red-600 dark:text-red-400 ring-1 ring-red-500/20',
 };
 
 interface BadgeProps {
