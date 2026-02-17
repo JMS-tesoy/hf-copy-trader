@@ -87,7 +87,10 @@ redis.on('messageBuffer', (channel, messageBuffer) => {
     if (client.clientType === 'mt5') {
       if (!jsonString) {
         const decoded = TradeSignal.decode(messageBuffer);
-        jsonString = JSON.stringify(TradeSignal.toObject(decoded));
+        jsonString = JSON.stringify(TradeSignal.toObject(decoded, {
+          keepCase: true,   // master_id stays master_id (not masterId)
+          longs: Number     // int64 ticket as number (not Long object)
+        }));
       }
       client.send(jsonString);
     } else {
