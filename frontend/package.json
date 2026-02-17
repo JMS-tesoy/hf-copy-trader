@@ -12,6 +12,7 @@
     "@dnd-kit/core": "^6.1.0",
     "@dnd-kit/utilities": "^3.2.2",
     "clsx": "^2.1.0",
+    "lightweight-charts": "^5.1.0",
     "lucide-react": "^0.344.0",
     "next": "^16.1.6",
     "protobufjs": "^7.2.6",
