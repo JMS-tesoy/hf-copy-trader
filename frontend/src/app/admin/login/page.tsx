@@ -6,9 +6,9 @@ import Link from 'next/link';
 import { useAuth } from '@/lib/AuthContext';
 
 export default function AdminLoginPage() {
-  const { adminLogin } = useAuth();
+  const { login } = useAuth();
   const router = useRouter();
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -18,7 +18,10 @@ export default function AdminLoginPage() {
     setError('');
     setLoading(true);
     try {
-      await adminLogin(username, password);
+      const role = await login(email, password);
+      if (role !== 'admin') {
+        throw new Error('Not authorized as admin');
+      }
       router.push('/');
     } catch (err: any) {
       setError(err.message);
@@ -41,13 +44,13 @@ export default function AdminLoginPage() {
             </div>
           )}
           <div>
-            <label className="block text-sm text-slate-400 mb-1">Username</label>
+            <label className="block text-sm text-slate-400 mb-1">Email</label>
             <input
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
               className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
-              placeholder="admin"
+              placeholder="admin@example.com"
               required
               autoFocus
             />
