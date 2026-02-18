@@ -6,14 +6,23 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 
 // --- Configuration ---
 const ADMIN_API_KEY = process.env.API_KEY || 'changeme-generate-a-real-key';
 const VALID_ACTIONS = ['BUY', 'SELL', 'CLOSE_BUY', 'CLOSE_SELL', 'MODIFY'];
+const JWT_SECRET = process.env.JWT_SECRET || 'changeme-jwt-secret';
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD || '';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const COOKIE_OPTS = { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 };
 
 const app = express();
-app.use(cors());
+app.use(cors({ credentials: true, origin: FRONTEND_URL }));
 app.use(bodyParser.json());
+app.use(cookieParser());
 
 // --- Redis with reconnect strategy ---
 const redis = new Redis({
@@ -95,6 +104,7 @@ pg.query(`
   ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS ticket BIGINT;
   ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS sl DOUBLE PRECISION;
   ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS tp DOUBLE PRECISION;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
 
   -- Indexes for 10K+ user scale
   CREATE INDEX IF NOT EXISTS idx_trade_audit_master ON trade_audit_log(master_id);
@@ -152,6 +162,259 @@ async function requireMasterKey(req, res, next) {
     res.status(500).json({ error: 'Auth check failed' });
   }
 }
+
+// --- JWT middleware for logged-in users ---
+function requireUserJWT(req, res, next) {
+  const token = req.cookies?.auth_token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role !== 'user') return res.status(403).json({ error: 'Forbidden' });
+    req.userId = payload.sub;
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired session' });
+  }
+}
+
+// --- JWT middleware for admin ---
+function requireAdminJWT(req, res, next) {
+  const token = req.cookies?.auth_token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired session' });
+  }
+}
+
+// ========================================
+// AUTH ENDPOINTS
+// ========================================
+
+// POST /api/auth/register — Self-registration for copy traders
+app.post('/api/auth/register', async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'name, email, and password are required' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'password must be at least 6 characters' });
+  }
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const result = await pg.query(
+      'INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email, balance, created_at',
+      [name.trim(), email.trim().toLowerCase(), hash]
+    );
+    const user = result.rows[0];
+    const token = jwt.sign({ sub: user.id, role: 'user' }, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('auth_token', token, COOKIE_OPTS);
+    res.status(201).json({ user });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/login — Unified login: auto-detects admin vs copy trader
+// Admin: use admin username + password → role: 'admin' → redirect to dashboard
+// Trader: use email + password → role: 'user' → redirect to portal
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email/username and password are required' });
+  }
+  try {
+    // Check admin credentials first (admin uses username, not email)
+    if (ADMIN_PASSWORD_HASH && email.trim() === ADMIN_USERNAME) {
+      const valid = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
+      if (valid) {
+        const token = jwt.sign({ sub: 'admin', role: 'admin' }, JWT_SECRET, { expiresIn: '7d' });
+        res.cookie('auth_token', token, COOKIE_OPTS);
+        return res.json({ role: 'admin' });
+      }
+    }
+    // Check user credentials by email
+    const result = await pg.query(
+      'SELECT id, name, email, balance, created_at, password_hash FROM users WHERE email = $1',
+      [email.trim().toLowerCase()]
+    );
+    const user = result.rows[0];
+    if (!user || !user.password_hash) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    const token = jwt.sign({ sub: user.id, role: 'user' }, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('auth_token', token, COOKIE_OPTS);
+    const { password_hash, ...safeUser } = user;
+    return res.json({ role: 'user', user: safeUser });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/logout — Clear session
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('auth_token');
+  res.json({ status: 'logged out' });
+});
+
+// GET /api/auth/me — Current session info (used by frontend to check auth)
+app.get('/api/auth/me', (req, res) => {
+  const token = req.cookies?.auth_token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    res.json({ role: payload.role, sub: payload.sub });
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired session' });
+  }
+});
+
+// ========================================
+// USER PORTAL ENDPOINTS (require user JWT)
+// ========================================
+
+// GET /api/me — Logged-in user's profile + subscriptions
+app.get('/api/me', requireUserJWT, async (req, res) => {
+  try {
+    const user = await pg.query(
+      'SELECT id, name, email, balance, created_at FROM users WHERE id = $1',
+      [req.userId]
+    );
+    if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const subs = await pg.query(`
+      SELECT s.*, m.name AS master_name, m.status AS master_status
+      FROM subscriptions s
+      JOIN masters m ON m.id = s.master_id
+      WHERE s.user_id = $1
+    `, [req.userId]);
+    res.json({ ...user.rows[0], subscriptions: subs.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/me/trades — Logged-in user's copied trades
+app.get('/api/me/trades', requireUserJWT, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const [tradesResult, countResult] = await Promise.all([
+      pg.query(
+        'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT $2 OFFSET $3',
+        [req.userId, limit, offset]
+      ),
+      pg.query('SELECT COUNT(*)::int AS count FROM copied_trades WHERE user_id = $1', [req.userId])
+    ]);
+    res.json({ trades: tradesResult.rows, total: countResult.rows[0].count, limit, offset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/me/profile — Update name/email/password
+app.put('/api/me/profile', requireUserJWT, async (req, res) => {
+  const { name, email, password } = req.body;
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    if (name) { fields.push(`name = $${idx++}`); values.push(name.trim()); }
+    if (email) { fields.push(`email = $${idx++}`); values.push(email.trim().toLowerCase()); }
+    if (password) {
+      if (password.length < 6) return res.status(400).json({ error: 'password must be at least 6 characters' });
+      const hash = await bcrypt.hash(password, 10);
+      fields.push(`password_hash = $${idx++}`);
+      values.push(hash);
+    }
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    values.push(req.userId);
+    const result = await pg.query(
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, balance, created_at`,
+      values
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/me/subscribe — Subscribe to a master
+app.post('/api/me/subscribe', requireUserJWT, async (req, res) => {
+  const { master_id, lot_multiplier } = req.body;
+  if (!master_id) return res.status(400).json({ error: 'master_id is required' });
+  try {
+    const result = await pg.query(
+      'INSERT INTO subscriptions (user_id, master_id, lot_multiplier) VALUES ($1, $2, $3) RETURNING *',
+      [req.userId, master_id, lot_multiplier || 1.0]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Already subscribed' });
+    if (err.code === '23503') return res.status(404).json({ error: 'Master not found' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/me/subscribe/:masterId — Unsubscribe
+app.delete('/api/me/subscribe/:masterId', requireUserJWT, async (req, res) => {
+  try {
+    const result = await pg.query(
+      'DELETE FROM subscriptions WHERE user_id = $1 AND master_id = $2 RETURNING id',
+      [req.userId, req.params.masterId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json({ status: 'unsubscribed' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/me/subscriptions/:id — Update own subscription
+app.put('/api/me/subscriptions/:id', requireUserJWT, async (req, res) => {
+  const { lot_multiplier, status } = req.body;
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    if (lot_multiplier !== undefined) {
+      const parsed = Number(lot_multiplier);
+      if (!Number.isFinite(parsed) || parsed <= 0) return res.status(400).json({ error: 'lot_multiplier must be positive' });
+      fields.push(`lot_multiplier = $${idx++}`);
+      values.push(parsed);
+    }
+    if (status && ['active', 'paused'].includes(status)) { fields.push(`status = $${idx++}`); values.push(status); }
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    values.push(req.params.id, req.userId);
+    const result = await pg.query(
+      `UPDATE subscriptions SET ${fields.join(', ')} WHERE id = $${idx} AND user_id = $${idx + 1} RETURNING *`,
+      values
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/masters/public — Active masters list for user portal (no API key needed, no api_key field exposed)
+app.get('/api/masters/public', requireUserJWT, async (req, res) => {
+  try {
+    const result = await pg.query(
+      'SELECT id, name, status FROM masters WHERE status = $1 ORDER BY name',
+      ['active']
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ========================================
 // TRADE ENDPOINTS

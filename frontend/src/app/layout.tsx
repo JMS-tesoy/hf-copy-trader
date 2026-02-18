@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Providers from "./providers";
-import { AppShell } from "@/components/layout/AppShell";
+import { ConditionalAppShell } from "@/components/layout/ConditionalAppShell";
 
 export const metadata: Metadata = {
   title: "HF Copy Trader",
@@ -17,9 +17,9 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body className="antialiased">
         <Providers>
-          <AppShell>
+          <ConditionalAppShell>
             {children}
-          </AppShell>
+          </ConditionalAppShell>
         </Providers>
       </body>
     </html>
