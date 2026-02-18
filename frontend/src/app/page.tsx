@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { useTradeSocket } from '@/lib/useTradeSocket';
 import { API } from '@/lib/api';
 import { StatCard } from '@/components/ui/StatCard';
@@ -12,6 +13,7 @@ import { MiniAreaChart } from '@/components/charts/MiniAreaChart';
 import { TradeVolumeChart } from '@/components/charts/TradeVolumeChart';
 import { SymbolDistChart } from '@/components/charts/SymbolDistChart';
 import { Activity, Crown, TrendingUp, BarChart3 } from 'lucide-react';
+import { useAuth } from '@/lib/AuthContext';
 
 interface Trade {
   master_id: number;
@@ -26,7 +28,16 @@ function formatPrice(price: number) {
 }
 
 export default function Home() {
+  const { role, loading } = useAuth();
+  const router = useRouter();
   const [lastTrade, setLastTrade] = useState<Trade | null>(null);
+
+  // Redirect unauthenticated users to register by default
+  useEffect(() => {
+    if (!loading && !role) {
+      router.push('/register');
+    }
+  }, [role, loading, router]);
   const [history, setHistory] = useState<Trade[]>([]);
   const [symbolFilter, setSymbolFilter] = useState<string>('all');
 

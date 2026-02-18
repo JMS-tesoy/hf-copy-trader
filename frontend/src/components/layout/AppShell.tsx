@@ -1,12 +1,14 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 import { MobileNav } from './MobileNav';
 import { NotificationCenter } from '@/components/notifications/NotificationCenter';
 import { useTradeSocket, type ConnectionStatus } from '@/lib/useTradeSocket';
 import { useToast } from '@/components/notifications/useToast';
+import { useAuth } from '@/lib/AuthContext';
 
 interface Notification {
   id: string;
@@ -23,6 +25,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const prevStatusRef = useRef<ConnectionStatus>('connecting');
   const { toast, dismissByType } = useToast();
+  const { role, loading } = useAuth();
+  const router = useRouter();
 
   // Persist sidebar state
   useEffect(() => {
