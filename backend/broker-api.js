@@ -6,14 +6,27 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
+const { Resend } = require('resend');
 
 // --- Configuration ---
 const ADMIN_API_KEY = process.env.API_KEY || 'changeme-generate-a-real-key';
 const VALID_ACTIONS = ['BUY', 'SELL', 'CLOSE_BUY', 'CLOSE_SELL', 'MODIFY'];
+const JWT_SECRET = process.env.JWT_SECRET || 'changeme-jwt-secret';
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD || '';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const COOKIE_OPTS = { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 };
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 const app = express();
-app.use(cors());
+app.use(cors({ credentials: true, origin: FRONTEND_URL }));
 app.use(bodyParser.json());
+app.use(cookieParser());
 
 // --- Redis with reconnect strategy ---
 const redis = new Redis({
@@ -43,7 +56,7 @@ pg.query(`
     id SERIAL PRIMARY KEY,
     master_id INTEGER NOT NULL,
     symbol VARCHAR(20) NOT NULL,
-    action VARCHAR(4) NOT NULL,
+    action VARCHAR(12) NOT NULL,
     price DOUBLE PRECISION NOT NULL,
     received_at TIMESTAMPTZ DEFAULT NOW()
   );
@@ -79,13 +92,29 @@ pg.query(`
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     master_id INTEGER NOT NULL,
     symbol VARCHAR(20) NOT NULL,
-    action VARCHAR(4) NOT NULL,
+    action VARCHAR(12) NOT NULL,
     price DOUBLE PRECISION NOT NULL,
+    ticket BIGINT,
+    sl DOUBLE PRECISION,
+    tp DOUBLE PRECISION,
     lot_size DOUBLE PRECISION DEFAULT 0.01,
     status VARCHAR(10) DEFAULT 'open',
     copied_at TIMESTAMPTZ DEFAULT NOW()
   );
 
+  -- Migrations for existing installs
+  ALTER TABLE trade_audit_log ALTER COLUMN action TYPE VARCHAR(12);
+  ALTER TABLE copied_trades ALTER COLUMN action TYPE VARCHAR(12);
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS ticket BIGINT;
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS sl DOUBLE PRECISION;
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS tp DOUBLE PRECISION;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64);
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64);
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
 
   -- Indexes for 10K+ user scale
   CREATE INDEX IF NOT EXISTS idx_trade_audit_master ON trade_audit_log(master_id);
@@ -94,6 +123,7 @@ pg.query(`
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
   CREATE INDEX IF NOT EXISTS idx_copied_trades_user ON copied_trades(user_id, copied_at DESC);
   CREATE INDEX IF NOT EXISTS idx_copied_trades_master ON copied_trades(master_id);
+  CREATE INDEX IF NOT EXISTS idx_copied_trades_master_ticket ON copied_trades(master_id, ticket) WHERE status = 'open';
   CREATE INDEX IF NOT EXISTS idx_masters_status ON masters(status);
 `).then(() => {
   console.log('PostgreSQL tables + indexes ready');
@@ -143,6 +173,505 @@ async function requireMasterKey(req, res, next) {
   }
 }
 
+// --- JWT middleware for logged-in users ---
+function requireUserJWT(req, res, next) {
+  const token = req.cookies?.auth_token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role !== 'user') return res.status(403).json({ error: 'Forbidden' });
+    req.userId = payload.sub;
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired session' });
+  }
+}
+
+// --- JWT middleware for admin ---
+function requireAdminJWT(req, res, next) {
+  const token = req.cookies?.auth_token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired session' });
+  }
+}
+
+// --- JWT middleware for master traders ---
+function requireMasterJWT(req, res, next) {
+  const token = req.cookies?.auth_token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role !== 'master') return res.status(403).json({ error: 'Forbidden' });
+    req.masterId = payload.sub;
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired session' });
+  }
+}
+
+// ========================================
+// AUTH ENDPOINTS
+// ========================================
+
+// POST /api/auth/register — Self-registration for copy traders
+app.post('/api/auth/register', async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'name, email, and password are required' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'password must be at least 6 characters' });
+  }
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const result = await pg.query(
+      'INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email, balance, created_at',
+      [name.trim(), email.trim().toLowerCase(), hash]
+    );
+    const user = result.rows[0];
+    const token = jwt.sign({ sub: user.id, role: 'user' }, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('auth_token', token, COOKIE_OPTS);
+    res.status(201).json({ user });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/master/register — Self-registration for master traders
+app.post('/api/auth/master/register', async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'name, email, and password are required' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'password must be at least 6 characters' });
+  }
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const apiKey = crypto.randomBytes(32).toString('hex');
+    const result = await pg.query(
+      'INSERT INTO masters (name, email, password_hash, api_key) VALUES ($1, $2, $3, $4) RETURNING id, name, email, status, api_key, created_at',
+      [name.trim(), email.trim().toLowerCase(), hash, apiKey]
+    );
+    const master = result.rows[0];
+    const token = jwt.sign({ sub: master.id, role: 'master' }, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('auth_token', token, COOKIE_OPTS);
+    res.status(201).json({ role: 'master', master });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/login — Unified login: auto-detects admin vs copy trader vs master trader
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email/username and password are required' });
+  }
+  try {
+    // 1. Check admin credentials (uses username, not email)
+    if (ADMIN_PASSWORD_HASH && email.trim() === ADMIN_USERNAME) {
+      const valid = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
+      if (valid) {
+        const token = jwt.sign({ sub: 'admin', role: 'admin' }, JWT_SECRET, { expiresIn: '7d' });
+        res.cookie('auth_token', token, COOKIE_OPTS);
+        return res.json({ role: 'admin' });
+      }
+    }
+    // 2. Check copy traders (users table) by email
+    const userResult = await pg.query(
+      'SELECT id, name, email, balance, created_at, password_hash FROM users WHERE email = $1',
+      [email.trim().toLowerCase()]
+    );
+    const user = userResult.rows[0];
+    if (user?.password_hash && await bcrypt.compare(password, user.password_hash)) {
+      const token = jwt.sign({ sub: user.id, role: 'user' }, JWT_SECRET, { expiresIn: '7d' });
+      res.cookie('auth_token', token, COOKIE_OPTS);
+      const { password_hash, ...safeUser } = user;
+      return res.json({ role: 'user', user: safeUser });
+    }
+    // 3. Check master traders (masters table) by email
+    const masterResult = await pg.query(
+      'SELECT id, name, email, status, api_key, password_hash FROM masters WHERE email = $1',
+      [email.trim().toLowerCase()]
+    );
+    const master = masterResult.rows[0];
+    if (master?.password_hash && await bcrypt.compare(password, master.password_hash)) {
+      const token = jwt.sign({ sub: master.id, role: 'master' }, JWT_SECRET, { expiresIn: '7d' });
+      res.cookie('auth_token', token, COOKIE_OPTS);
+      const { password_hash, ...safeMaster } = master;
+      return res.json({ role: 'master', master: safeMaster });
+    }
+    return res.status(401).json({ error: 'Invalid credentials' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/logout — Clear session
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('auth_token');
+  res.json({ status: 'logged out' });
+});
+
+// POST /api/auth/forgot-password — Request reset token
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ error: 'Valid email is required' });
+  }
+
+  try {
+    const emailLower = email.trim().toLowerCase();
+    // Check both users and masters
+    const userRes = await pg.query('SELECT id, name, "email", \'user\' as role FROM users WHERE email = $1', [emailLower]);
+    const masterRes = await pg.query('SELECT id, name, "email", \'master\' as role FROM masters WHERE email = $1', [emailLower]);
+
+    const target = userRes.rows[0] || masterRes.rows[0];
+    if (!target) {
+      // Return success anyway to prevent email enumeration (security best practice)
+      return res.json({ status: 'If this email exists, a reset link has been sent' });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + 3600000); // 1 hour from now
+
+    const table = target.role === 'user' ? 'users' : 'masters';
+    await pg.query(
+      `UPDATE ${table} SET reset_token = $1, reset_expires = $2 WHERE id = $3`,
+      [token, expires, target.id]
+    );
+
+    const resetLink = `${FRONTEND_URL}/reset-password?token=${token}`;
+
+    if (resend) {
+      const { data, error: resendError } = await resend.emails.send({
+        from: 'HF Copy Trader <onboarding@resend.dev>',
+        to: [target.email],
+        subject: 'Reset your HF Copy Trader password',
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #334155;">
+            <h1 style="color: #0f172a; font-size: 24px; font-weight: 700;">Reset your password</h1>
+            <p style="font-size: 16px; line-height: 24px;">Hello ${target.name},</p>
+            <p style="font-size: 16px; line-height: 24px;">We received a request to reset your password. Click the button below to choose a new one. This link expires in 1 hour.</p>
+            <div style="margin: 32px 0;">
+              <a href="${resetLink}" style="background: #10b981; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block;">Reset Password</a>
+            </div>
+            <p style="font-size: 14px; color: #64748b;">If you didn't request this, you can safely ignore this email.</p>
+            <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 32px 0;" />
+            <p style="font-size: 12px; color: #94a3b8;">&copy; 2026 HF Copy Trader. High-frequency real-time copy trading platform.</p>
+          </div>
+        `
+      });
+
+      if (resendError) {
+        console.error('[RESEND ERROR]', resendError);
+        // We still return 200 to the frontend for security, but we log the error
+      } else {
+        console.log('[RESEND SUCCESS]', data);
+      }
+    } else {
+      console.log(`[DEV] Password reset for ${target.email}: ${resetLink}`);
+    }
+
+    res.json({ status: 'If this email exists, a reset link has been sent' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/reset-password — Update password using token
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { token, password } = req.body;
+  if (!token || !password || password.length < 8) {
+    return res.status(400).json({ error: 'Token and a password of at least 8 characters are required' });
+  }
+
+  try {
+    const hash = await bcrypt.hash(password, 10);
+
+    // Check users
+    let result = await pg.query(
+      'UPDATE users SET password_hash = $1, reset_token = NULL, reset_expires = NULL WHERE reset_token = $2 AND reset_expires > NOW() RETURNING id',
+      [hash, token]
+    );
+
+    if (result.rows.length === 0) {
+      // Check masters
+      result = await pg.query(
+        'UPDATE masters SET password_hash = $1, reset_token = NULL, reset_expires = NULL WHERE reset_token = $2 AND reset_expires > NOW() RETURNING id',
+        [hash, token]
+      );
+    }
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    res.json({ status: 'password updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/auth/me — Current session info (used by frontend to check auth state)
+app.get('/api/auth/me', async (req, res) => {
+  const token = req.cookies?.auth_token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role === 'master') {
+      const r = await pg.query(
+        'SELECT id, name, email, status, api_key, created_at FROM masters WHERE id = $1',
+        [payload.sub]
+      );
+      if (r.rows.length === 0) return res.status(401).json({ error: 'Master not found' });
+      return res.json({ role: 'master', master: r.rows[0] });
+    }
+    res.json({ role: payload.role, sub: payload.sub });
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired session' });
+  }
+});
+
+// ========================================
+// USER PORTAL ENDPOINTS (require user JWT)
+// ========================================
+
+// GET /api/me — Logged-in user's profile + subscriptions
+app.get('/api/me', requireUserJWT, async (req, res) => {
+  try {
+    const user = await pg.query(
+      'SELECT id, name, email, balance, created_at FROM users WHERE id = $1',
+      [req.userId]
+    );
+    if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const subs = await pg.query(`
+      SELECT s.*, m.name AS master_name, m.status AS master_status
+      FROM subscriptions s
+      JOIN masters m ON m.id = s.master_id
+      WHERE s.user_id = $1
+    `, [req.userId]);
+    res.json({ ...user.rows[0], subscriptions: subs.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/me/trades — Logged-in user's copied trades
+app.get('/api/me/trades', requireUserJWT, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const [tradesResult, countResult] = await Promise.all([
+      pg.query(
+        'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT $2 OFFSET $3',
+        [req.userId, limit, offset]
+      ),
+      pg.query('SELECT COUNT(*)::int AS count FROM copied_trades WHERE user_id = $1', [req.userId])
+    ]);
+    res.json({ trades: tradesResult.rows, total: countResult.rows[0].count, limit, offset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/me/profile — Update name/email/password
+app.put('/api/me/profile', requireUserJWT, async (req, res) => {
+  const { name, email, password } = req.body;
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    if (name) { fields.push(`name = $${idx++}`); values.push(name.trim()); }
+    if (email) { fields.push(`email = $${idx++}`); values.push(email.trim().toLowerCase()); }
+    if (password) {
+      if (password.length < 6) return res.status(400).json({ error: 'password must be at least 6 characters' });
+      const hash = await bcrypt.hash(password, 10);
+      fields.push(`password_hash = $${idx++}`);
+      values.push(hash);
+    }
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    values.push(req.userId);
+    const result = await pg.query(
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, balance, created_at`,
+      values
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/me/subscribe — Subscribe to a master
+app.post('/api/me/subscribe', requireUserJWT, async (req, res) => {
+  const { master_id, lot_multiplier } = req.body;
+  if (!master_id) return res.status(400).json({ error: 'master_id is required' });
+  try {
+    const result = await pg.query(
+      'INSERT INTO subscriptions (user_id, master_id, lot_multiplier) VALUES ($1, $2, $3) RETURNING *',
+      [req.userId, master_id, lot_multiplier || 1.0]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Already subscribed' });
+    if (err.code === '23503') return res.status(404).json({ error: 'Master not found' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/me/subscribe/:masterId — Unsubscribe
+app.delete('/api/me/subscribe/:masterId', requireUserJWT, async (req, res) => {
+  try {
+    const result = await pg.query(
+      'DELETE FROM subscriptions WHERE user_id = $1 AND master_id = $2 RETURNING id',
+      [req.userId, req.params.masterId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json({ status: 'unsubscribed' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/me/subscriptions/:id — Update own subscription
+app.put('/api/me/subscriptions/:id', requireUserJWT, async (req, res) => {
+  const { lot_multiplier, status } = req.body;
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    if (lot_multiplier !== undefined) {
+      const parsed = Number(lot_multiplier);
+      if (!Number.isFinite(parsed) || parsed <= 0) return res.status(400).json({ error: 'lot_multiplier must be positive' });
+      fields.push(`lot_multiplier = $${idx++}`);
+      values.push(parsed);
+    }
+    if (status && ['active', 'paused'].includes(status)) { fields.push(`status = $${idx++}`); values.push(status); }
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    values.push(req.params.id, req.userId);
+    const result = await pg.query(
+      `UPDATE subscriptions SET ${fields.join(', ')} WHERE id = $${idx} AND user_id = $${idx + 1} RETURNING *`,
+      values
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/masters/public — Active masters list for user portal (no API key needed, no api_key field exposed)
+app.get('/api/masters/public', requireUserJWT, async (req, res) => {
+  try {
+    const result = await pg.query(
+      'SELECT id, name, status FROM masters WHERE status = $1 ORDER BY name',
+      ['active']
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========================================
+// MASTER PORTAL ENDPOINTS (require master JWT)
+// ========================================
+
+// GET /api/master-me — Master's own profile + stats
+app.get('/api/master-me', requireMasterJWT, async (req, res) => {
+  try {
+    const result = await pg.query(`
+      SELECT m.id, m.name, m.email, m.status, m.api_key, m.created_at,
+        COALESCE(t.signal_count, 0) AS signal_count,
+        t.last_signal_at,
+        COALESCE(s.subscriber_count, 0) AS subscriber_count
+      FROM masters m
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS signal_count, MAX(received_at) AS last_signal_at
+        FROM trade_audit_log GROUP BY master_id
+      ) t ON t.master_id = m.id
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS subscriber_count
+        FROM subscriptions WHERE status = 'active' GROUP BY master_id
+      ) s ON s.master_id = m.id
+      WHERE m.id = $1
+    `, [req.masterId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Master not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/master-me/trades — Master's own trade history (from audit log)
+app.get('/api/master-me/trades', requireMasterJWT, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const [tradesResult, countResult] = await Promise.all([
+      pg.query(
+        'SELECT id, symbol, action, price, received_at FROM trade_audit_log WHERE master_id = $1 ORDER BY received_at DESC LIMIT $2 OFFSET $3',
+        [req.masterId, limit, offset]
+      ),
+      pg.query('SELECT COUNT(*)::int AS count FROM trade_audit_log WHERE master_id = $1', [req.masterId])
+    ]);
+    res.json({ trades: tradesResult.rows, total: countResult.rows[0].count, limit, offset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/master-me/profile — Update master's name, email, or password
+app.put('/api/master-me/profile', requireMasterJWT, async (req, res) => {
+  const { name, email, password } = req.body;
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    if (name) { fields.push(`name = $${idx++}`); values.push(name.trim()); }
+    if (email) { fields.push(`email = $${idx++}`); values.push(email.trim().toLowerCase()); }
+    if (password) {
+      if (password.length < 6) return res.status(400).json({ error: 'password must be at least 6 characters' });
+      const hash = await bcrypt.hash(password, 10);
+      fields.push(`password_hash = $${idx++}`);
+      values.push(hash);
+    }
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    values.push(req.masterId);
+    const result = await pg.query(
+      `UPDATE masters SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, status, api_key, created_at`,
+      values
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/master-me/regenerate-key — Regenerate master's own API key
+app.post('/api/master-me/regenerate-key', requireMasterJWT, async (req, res) => {
+  try {
+    const apiKey = crypto.randomBytes(32).toString('hex');
+    const result = await pg.query(
+      'UPDATE masters SET api_key = $1 WHERE id = $2 RETURNING id, name, email, status, api_key, created_at',
+      [apiKey, req.masterId]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========================================
 // TRADE ENDPOINTS
 // ========================================
@@ -181,15 +710,28 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
 
   const isClose = upperAction.startsWith('CLOSE_');
   const isModify = upperAction === 'MODIFY';
+  const hasTicket = ticket !== undefined && ticket !== null && ticket !== '';
+  const parsedTicket = hasTicket ? Number(ticket) : null;
+
+  if (hasTicket && (!Number.isInteger(parsedTicket) || parsedTicket <= 0)) {
+    return res.status(400).json({ error: 'ticket must be a positive integer' });
+  }
+
+  if ((isClose || isModify) && !hasTicket) {
+    return res.status(400).json({ error: 'ticket is required for CLOSE/ MODIFY actions' });
+  }
+
+  const parsedSl = sl !== undefined && sl !== null ? Number(sl) : 0;
+  const parsedTp = tp !== undefined && tp !== null ? Number(tp) : 0;
 
   const payload = {
     master_id: parsedMasterId,
     symbol: symbol.trim(),
     action: upperAction,
     price: parsedPrice,
-    ticket: ticket ? Number(ticket) : 0,
-    sl: sl ? Number(sl) : 0,
-    tp: tp ? Number(tp) : 0,
+    ticket: hasTicket ? parsedTicket : 0,
+    sl: parsedSl,
+    tp: parsedTp,
   };
 
   const errMsg = TradeSignal.verify(payload);
@@ -217,13 +759,39 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
   if (isClose) {
     const baseAction = upperAction === 'CLOSE_BUY' ? 'BUY' : 'SELL';
     try {
-      await pg.query(
+      const closeResult = await pg.query(
         `UPDATE copied_trades SET status = 'closed'
-         WHERE master_id = $1 AND symbol = $2 AND action = $3 AND status = 'open'`,
-        [parsedMasterId, payload.symbol, baseAction]
+         WHERE master_id = $1 AND ticket = $2 AND status = 'open'`,
+        [parsedMasterId, parsedTicket]
       );
+
+      if (closeResult.rowCount === 0) {
+        await pg.query(
+          `UPDATE copied_trades SET status = 'closed'
+           WHERE master_id = $1 AND symbol = $2 AND action = $3 AND status = 'open'
+             AND (ticket IS NULL OR ticket = 0)`,
+          [parsedMasterId, payload.symbol, baseAction]
+        );
+      }
     } catch (err) {
       console.error('Close copied trades failed:', err.message);
+    }
+  }
+
+  // Handle modify signals — update SL/TP for matched trade
+  if (isModify) {
+    try {
+      const modifyResult = await pg.query(
+        `UPDATE copied_trades SET sl = $1, tp = $2
+         WHERE master_id = $3 AND ticket = $4 AND status = 'open'`,
+        [payload.sl, payload.tp, parsedMasterId, parsedTicket]
+      );
+
+      if (modifyResult.rowCount === 0) {
+        console.warn(`Modify ignored: no open copied trade for master_id=${parsedMasterId}, ticket=${parsedTicket}`);
+      }
+    } catch (err) {
+      console.error('Modify copied trades failed:', err.message);
     }
   }
 
@@ -236,8 +804,18 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
       );
       for (const sub of subs.rows) {
         pg.query(
-          'INSERT INTO copied_trades (user_id, master_id, symbol, action, price, lot_size) VALUES ($1, $2, $3, $4, $5, $6)',
-          [sub.user_id, parsedMasterId, payload.symbol, payload.action, payload.price, 0.01 * sub.lot_multiplier]
+          'INSERT INTO copied_trades (user_id, master_id, symbol, action, price, ticket, sl, tp, lot_size) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+          [
+            sub.user_id,
+            parsedMasterId,
+            payload.symbol,
+            payload.action,
+            payload.price,
+            hasTicket ? parsedTicket : null,
+            payload.sl,
+            payload.tp,
+            0.01 * sub.lot_multiplier,
+          ]
         ).catch(() => {});
       }
     } catch (err) {
@@ -256,22 +834,41 @@ app.get('/api/trades/latest', requireAdminKey, async (req, res) => {
   res.json(trades.map((t) => JSON.parse(t)));
 });
 
+// GET /api/trades/history — Historical trades from audit log
+app.get('/api/trades/history', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+    const result = await pg.query(
+      'SELECT master_id, symbol, action, price, received_at FROM trade_audit_log ORDER BY received_at DESC LIMIT $1',
+      [limit]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch trade history' });
+  }
+});
+
 // ========================================
 // MASTER ENDPOINTS
 // ========================================
 
 // GET /api/masters — List all masters with stats
-app.get('/api/masters', async (req, res) => {
+app.get('/api/masters', requireAdminKey, async (req, res) => {
   try {
     const result = await pg.query(`
       SELECT m.*,
         COALESCE(t.signal_count, 0) AS signal_count,
-        t.last_signal_at
+        t.last_signal_at,
+        COALESCE(s.subscriber_count, 0) AS subscriber_count
       FROM masters m
       LEFT JOIN (
         SELECT master_id, COUNT(*) AS signal_count, MAX(received_at) AS last_signal_at
         FROM trade_audit_log GROUP BY master_id
       ) t ON t.master_id = m.id
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS subscriber_count
+        FROM subscriptions WHERE status = 'active' GROUP BY master_id
+      ) s ON s.master_id = m.id
       ORDER BY m.created_at DESC
     `);
     res.json(result.rows);
@@ -335,12 +932,41 @@ app.delete('/api/masters/:id', requireAdminKey, async (req, res) => {
   }
 });
 
+// GET /api/masters/:id/trades — Trade history for a specific master
+app.get('/api/masters/:id/trades', requireAdminKey, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const result = await pg.query(
+      'SELECT master_id, symbol, action, price, received_at FROM trade_audit_log WHERE master_id = $1 ORDER BY received_at DESC LIMIT $2',
+      [req.params.id, limit]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/masters/:id/regenerate-key — Regenerate API key
+app.put('/api/masters/:id/regenerate-key', requireAdminKey, async (req, res) => {
+  try {
+    const apiKey = crypto.randomBytes(32).toString('hex');
+    const result = await pg.query(
+      'UPDATE masters SET api_key = $1 WHERE id = $2 RETURNING *',
+      [apiKey, req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Master not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========================================
 // USER ENDPOINTS
 // ========================================
 
 // GET /api/users — List all users
-app.get('/api/users', async (req, res) => {
+app.get('/api/users', requireAdminKey, async (req, res) => {
   try {
     const result = await pg.query('SELECT id, name, email, balance, created_at FROM users ORDER BY created_at DESC');
     res.json(result.rows);
@@ -350,7 +976,7 @@ app.get('/api/users', async (req, res) => {
 });
 
 // POST /api/users — Create user
-app.post('/api/users', async (req, res) => {
+app.post('/api/users', requireAdminKey, async (req, res) => {
   const { name, email } = req.body;
   if (!name || !email) {
     return res.status(400).json({ error: 'name and email are required' });
@@ -368,7 +994,7 @@ app.post('/api/users', async (req, res) => {
 });
 
 // GET /api/users/:id — User profile with subscriptions
-app.get('/api/users/:id', async (req, res) => {
+app.get('/api/users/:id', requireAdminKey, async (req, res) => {
   try {
     const user = await pg.query('SELECT id, name, email, balance, created_at FROM users WHERE id = $1', [req.params.id]);
     if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -387,7 +1013,7 @@ app.get('/api/users/:id', async (req, res) => {
 });
 
 // PUT /api/users/:id — Update user
-app.put('/api/users/:id', async (req, res) => {
+app.put('/api/users/:id', requireAdminKey, async (req, res) => {
   const { name, email } = req.body;
   const { id } = req.params;
   try {
@@ -413,12 +1039,23 @@ app.put('/api/users/:id', async (req, res) => {
   }
 });
 
+// DELETE /api/users/:id — Delete user (cascades subscriptions + copied_trades)
+app.delete('/api/users/:id', requireAdminKey, async (req, res) => {
+  try {
+    const result = await pg.query('DELETE FROM users WHERE id = $1 RETURNING id', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ status: 'deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========================================
 // SUBSCRIPTION ENDPOINTS
 // ========================================
 
 // POST /api/users/:id/subscribe — Subscribe to a master
-app.post('/api/users/:id/subscribe', async (req, res) => {
+app.post('/api/users/:id/subscribe', requireAdminKey, async (req, res) => {
   const { master_id, lot_multiplier } = req.body;
   if (!master_id) return res.status(400).json({ error: 'master_id is required' });
   try {
@@ -435,7 +1072,7 @@ app.post('/api/users/:id/subscribe', async (req, res) => {
 });
 
 // DELETE /api/users/:id/subscribe/:masterId — Unsubscribe
-app.delete('/api/users/:id/subscribe/:masterId', async (req, res) => {
+app.delete('/api/users/:id/subscribe/:masterId', requireAdminKey, async (req, res) => {
   try {
     const result = await pg.query(
       'DELETE FROM subscriptions WHERE user_id = $1 AND master_id = $2 RETURNING id',
@@ -448,14 +1085,62 @@ app.delete('/api/users/:id/subscribe/:masterId', async (req, res) => {
   }
 });
 
-// GET /api/users/:id/trades — Copied trades for a user
-app.get('/api/users/:id/trades', async (req, res) => {
+// PUT /api/subscriptions/:id — Update subscription (lot_multiplier, status)
+app.put('/api/subscriptions/:id', requireAdminKey, async (req, res) => {
+  const { lot_multiplier, status } = req.body;
+  const { id } = req.params;
   try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (lot_multiplier !== undefined) {
+      const parsed = Number(lot_multiplier);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return res.status(400).json({ error: 'lot_multiplier must be a positive number' });
+      }
+      fields.push(`lot_multiplier = $${idx++}`);
+      values.push(parsed);
+    }
+    if (status && ['active', 'paused'].includes(status)) {
+      fields.push(`status = $${idx++}`);
+      values.push(status);
+    }
+
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+    values.push(id);
     const result = await pg.query(
-      'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT 100',
-      [req.params.id]
+      `UPDATE subscriptions SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
     );
-    res.json(result.rows);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/users/:id/trades — Copied trades for a user (with pagination)
+app.get('/api/users/:id/trades', requireAdminKey, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+
+    const [tradesResult, countResult] = await Promise.all([
+      pg.query(
+        'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT $2 OFFSET $3',
+        [req.params.id, limit, offset]
+      ),
+      pg.query('SELECT COUNT(*)::int AS count FROM copied_trades WHERE user_id = $1', [req.params.id])
+    ]);
+
+    res.json({
+      trades: tradesResult.rows,
+      total: countResult.rows[0].count,
+      limit,
+      offset
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
