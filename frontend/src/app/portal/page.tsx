@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
 import { API } from '@/lib/api';
+import { PowerIcon } from '@/components/ui/PowerIcon';
 
 interface Subscription {
   id: number;
@@ -169,9 +170,10 @@ export default function PortalPage() {
           </span>
           <button
             onClick={handleLogout}
-            className="text-sm text-slate-400 hover:text-white transition-colors"
+            className="text-slate-400 hover:text-red-400 transition-colors"
+            title="Sign out"
           >
-            Sign out
+            <PowerIcon />
           </button>
         </div>
       </header>

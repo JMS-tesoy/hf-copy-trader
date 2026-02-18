@@ -4,11 +4,12 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/AuthContext';
-import { TrendingUp, Zap, Shield } from 'lucide-react';
+import { TrendingUp, Users, Zap } from 'lucide-react';
 
-export default function LoginPage() {
-  const { login } = useAuth();
+export default function MasterRegisterPage() {
+  const { registerMaster } = useAuth();
   const router = useRouter();
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -19,10 +20,8 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      const role = await login(email, password);
-      if (role === 'admin') router.push('/');
-      else if (role === 'master') router.push('/master-portal');
-      else router.push('/portal');
+      await registerMaster(name, email, password);
+      router.push('/master-portal');
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -43,20 +42,20 @@ export default function LoginPage() {
 
         <div>
           <h1 className="text-4xl font-bold text-white leading-snug mb-4">
-            Trade smarter.<br />
+            Become a master.<br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-400">
-              Copy the best.
+              Lead the market.
             </span>
           </h1>
           <p className="text-slate-400 text-base leading-relaxed mb-10">
-            Real-time copy trading with ultra-low latency. Follow top master traders and have their positions automatically mirrored in your account.
+            Register as a master trader and let thousands of copy traders automatically follow your positions in real time, across any broker.
           </p>
 
           <div className="space-y-4">
             {[
-              { icon: Zap, label: 'Ultra-low latency', desc: 'Sub-millisecond signal delivery via WebSocket' },
-              { icon: TrendingUp, label: 'Real-time copying', desc: 'Trades copied instantly across all brokers' },
-              { icon: Shield, label: 'Secure & reliable', desc: 'Per-key authentication and full trade audit log' },
+              { icon: Users, label: 'Build your following', desc: 'Traders subscribe to copy your every move automatically' },
+              { icon: TrendingUp, label: 'Showcase your edge', desc: 'Your full trade history and stats, all in one place' },
+              { icon: Zap, label: 'Instant broadcast', desc: 'Signals delivered in milliseconds via WebSocket' },
             ].map(({ icon: Icon, label, desc }) => (
               <div key={label} className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -74,7 +73,7 @@ export default function LoginPage() {
         <p className="text-slate-600 text-xs">© 2026 HF Copy Trader. All rights reserved.</p>
       </div>
 
-      {/* Right — login form */}
+      {/* Right — register form */}
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-12">
         {/* Mobile logo */}
         <div className="flex items-center gap-2 mb-10 lg:hidden">
@@ -86,8 +85,8 @@ export default function LoginPage() {
 
         <div className="w-full max-w-sm">
           <div className="mb-8">
-            <h2 className="text-2xl font-bold text-white">Welcome back</h2>
-            <p className="text-slate-400 text-sm mt-1">Sign in to your account to continue</p>
+            <h2 className="text-2xl font-bold text-white">Create master account</h2>
+            <p className="text-slate-400 text-sm mt-1">Register as a master trader to start broadcasting signals</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -98,17 +97,27 @@ export default function LoginPage() {
             )}
 
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">
-                Email or username
-              </label>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Full name</label>
               <input
                 type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                className="w-full bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors"
+                placeholder="John Smith"
+                required
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Email address</label>
+              <input
+                type="email"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 className="w-full bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors"
                 placeholder="you@example.com"
                 required
-                autoFocus
               />
             </div>
 
@@ -119,7 +128,8 @@ export default function LoginPage() {
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 className="w-full bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors"
-                placeholder="••••••••"
+                placeholder="Min. 6 characters"
+                minLength={6}
                 required
               />
             </div>
@@ -129,14 +139,20 @@ export default function LoginPage() {
               disabled={loading}
               className="w-full bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 disabled:opacity-50 text-white font-semibold rounded-xl py-2.5 text-sm transition-all shadow-lg shadow-emerald-500/20 mt-2"
             >
-              {loading ? 'Signing in…' : 'Sign in'}
+              {loading ? 'Creating account…' : 'Create master account'}
             </button>
           </form>
 
           <p className="text-center text-slate-500 text-sm mt-6">
-            Don&apos;t have an account?{' '}
-            <Link href="/register" className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
-              Create one
+            Already have an account?{' '}
+            <Link href="/login" className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
+              Sign in
+            </Link>
+          </p>
+          <p className="text-center text-slate-600 text-xs mt-3">
+            Want to copy trade instead?{' '}
+            <Link href="/register" className="text-slate-500 hover:text-slate-400 transition-colors">
+              Register as a trader
             </Link>
           </p>
         </div>

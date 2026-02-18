@@ -2,8 +2,9 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import { useTheme } from '@/lib/ThemeContext';
-import { Menu, Bell, Sun, Moon, LogOut } from 'lucide-react';
+import { Menu, Bell, Sun, Moon } from 'lucide-react';
 import { StatusBadge } from '@/components/ui/StatusBadge';
+import { PowerIcon } from '@/components/ui/PowerIcon';
 import type { ConnectionStatus } from '@/lib/useTradeSocket';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -86,7 +87,7 @@ export function TopBar({ onMenuClick, status, notificationCount = 0, onBellClick
           className="w-9 h-9 rounded-xl border border-gray-200 dark:border-slate-700 flex items-center justify-center hover:bg-red-50 dark:hover:bg-red-900/20 hover:border-red-300 dark:hover:border-red-800 transition-colors text-gray-500 dark:text-slate-400 hover:text-red-500"
           title="Sign out"
         >
-          <LogOut className="w-4 h-4" />
+          <PowerIcon />
         </button>
       </div>
     </header>

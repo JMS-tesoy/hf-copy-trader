@@ -105,6 +105,8 @@ pg.query(`
   ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS sl DOUBLE PRECISION;
   ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS tp DOUBLE PRECISION;
   ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
 
   -- Indexes for 10K+ user scale
   CREATE INDEX IF NOT EXISTS idx_trade_audit_master ON trade_audit_log(master_id);
@@ -190,6 +192,20 @@ function requireAdminJWT(req, res, next) {
   }
 }
 
+// --- JWT middleware for master traders ---
+function requireMasterJWT(req, res, next) {
+  const token = req.cookies?.auth_token;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role !== 'master') return res.status(403).json({ error: 'Forbidden' });
+    req.masterId = payload.sub;
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired session' });
+  }
+}
+
 // ========================================
 // AUTH ENDPOINTS
 // ========================================
@@ -219,16 +235,40 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// POST /api/auth/login — Unified login: auto-detects admin vs copy trader
-// Admin: use admin username + password → role: 'admin' → redirect to dashboard
-// Trader: use email + password → role: 'user' → redirect to portal
+// POST /api/auth/master/register — Self-registration for master traders
+app.post('/api/auth/master/register', async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'name, email, and password are required' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'password must be at least 6 characters' });
+  }
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const apiKey = crypto.randomBytes(32).toString('hex');
+    const result = await pg.query(
+      'INSERT INTO masters (name, email, password_hash, api_key) VALUES ($1, $2, $3, $4) RETURNING id, name, email, status, api_key, created_at',
+      [name.trim(), email.trim().toLowerCase(), hash, apiKey]
+    );
+    const master = result.rows[0];
+    const token = jwt.sign({ sub: master.id, role: 'master' }, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('auth_token', token, COOKIE_OPTS);
+    res.status(201).json({ role: 'master', master });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/login — Unified login: auto-detects admin vs copy trader vs master trader
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email/username and password are required' });
   }
   try {
-    // Check admin credentials first (admin uses username, not email)
+    // 1. Check admin credentials (uses username, not email)
     if (ADMIN_PASSWORD_HASH && email.trim() === ADMIN_USERNAME) {
       const valid = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
       if (valid) {
@@ -237,21 +277,31 @@ app.post('/api/auth/login', async (req, res) => {
         return res.json({ role: 'admin' });
       }
     }
-    // Check user credentials by email
-    const result = await pg.query(
+    // 2. Check copy traders (users table) by email
+    const userResult = await pg.query(
       'SELECT id, name, email, balance, created_at, password_hash FROM users WHERE email = $1',
       [email.trim().toLowerCase()]
     );
-    const user = result.rows[0];
-    if (!user || !user.password_hash) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    const user = userResult.rows[0];
+    if (user?.password_hash && await bcrypt.compare(password, user.password_hash)) {
+      const token = jwt.sign({ sub: user.id, role: 'user' }, JWT_SECRET, { expiresIn: '7d' });
+      res.cookie('auth_token', token, COOKIE_OPTS);
+      const { password_hash, ...safeUser } = user;
+      return res.json({ role: 'user', user: safeUser });
     }
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-    const token = jwt.sign({ sub: user.id, role: 'user' }, JWT_SECRET, { expiresIn: '7d' });
-    res.cookie('auth_token', token, COOKIE_OPTS);
-    const { password_hash, ...safeUser } = user;
-    return res.json({ role: 'user', user: safeUser });
+    // 3. Check master traders (masters table) by email
+    const masterResult = await pg.query(
+      'SELECT id, name, email, status, api_key, password_hash FROM masters WHERE email = $1',
+      [email.trim().toLowerCase()]
+    );
+    const master = masterResult.rows[0];
+    if (master?.password_hash && await bcrypt.compare(password, master.password_hash)) {
+      const token = jwt.sign({ sub: master.id, role: 'master' }, JWT_SECRET, { expiresIn: '7d' });
+      res.cookie('auth_token', token, COOKIE_OPTS);
+      const { password_hash, ...safeMaster } = master;
+      return res.json({ role: 'master', master: safeMaster });
+    }
+    return res.status(401).json({ error: 'Invalid credentials' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -263,12 +313,20 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ status: 'logged out' });
 });
 
-// GET /api/auth/me — Current session info (used by frontend to check auth)
-app.get('/api/auth/me', (req, res) => {
+// GET /api/auth/me — Current session info (used by frontend to check auth state)
+app.get('/api/auth/me', async (req, res) => {
   const token = req.cookies?.auth_token;
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role === 'master') {
+      const r = await pg.query(
+        'SELECT id, name, email, status, api_key, created_at FROM masters WHERE id = $1',
+        [payload.sub]
+      );
+      if (r.rows.length === 0) return res.status(401).json({ error: 'Master not found' });
+      return res.json({ role: 'master', master: r.rows[0] });
+    }
     res.json({ role: payload.role, sub: payload.sub });
   } catch {
     res.status(401).json({ error: 'Invalid or expired session' });
@@ -411,6 +469,96 @@ app.get('/api/masters/public', requireUserJWT, async (req, res) => {
       ['active']
     );
     res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========================================
+// MASTER PORTAL ENDPOINTS (require master JWT)
+// ========================================
+
+// GET /api/master-me — Master's own profile + stats
+app.get('/api/master-me', requireMasterJWT, async (req, res) => {
+  try {
+    const result = await pg.query(`
+      SELECT m.id, m.name, m.email, m.status, m.api_key, m.created_at,
+        COALESCE(t.signal_count, 0) AS signal_count,
+        t.last_signal_at,
+        COALESCE(s.subscriber_count, 0) AS subscriber_count
+      FROM masters m
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS signal_count, MAX(received_at) AS last_signal_at
+        FROM trade_audit_log GROUP BY master_id
+      ) t ON t.master_id = m.id
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS subscriber_count
+        FROM subscriptions WHERE status = 'active' GROUP BY master_id
+      ) s ON s.master_id = m.id
+      WHERE m.id = $1
+    `, [req.masterId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Master not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/master-me/trades — Master's own trade history (from audit log)
+app.get('/api/master-me/trades', requireMasterJWT, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const [tradesResult, countResult] = await Promise.all([
+      pg.query(
+        'SELECT id, symbol, action, price, received_at FROM trade_audit_log WHERE master_id = $1 ORDER BY received_at DESC LIMIT $2 OFFSET $3',
+        [req.masterId, limit, offset]
+      ),
+      pg.query('SELECT COUNT(*)::int AS count FROM trade_audit_log WHERE master_id = $1', [req.masterId])
+    ]);
+    res.json({ trades: tradesResult.rows, total: countResult.rows[0].count, limit, offset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/master-me/profile — Update master's name, email, or password
+app.put('/api/master-me/profile', requireMasterJWT, async (req, res) => {
+  const { name, email, password } = req.body;
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    if (name) { fields.push(`name = $${idx++}`); values.push(name.trim()); }
+    if (email) { fields.push(`email = $${idx++}`); values.push(email.trim().toLowerCase()); }
+    if (password) {
+      if (password.length < 6) return res.status(400).json({ error: 'password must be at least 6 characters' });
+      const hash = await bcrypt.hash(password, 10);
+      fields.push(`password_hash = $${idx++}`);
+      values.push(hash);
+    }
+    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    values.push(req.masterId);
+    const result = await pg.query(
+      `UPDATE masters SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, status, api_key, created_at`,
+      values
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/master-me/regenerate-key — Regenerate master's own API key
+app.post('/api/master-me/regenerate-key', requireMasterJWT, async (req, res) => {
+  try {
+    const apiKey = crypto.randomBytes(32).toString('hex');
+    const result = await pg.query(
+      'UPDATE masters SET api_key = $1 WHERE id = $2 RETURNING id, name, email, status, api_key, created_at',
+      [apiKey, req.masterId]
+    );
+    res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
