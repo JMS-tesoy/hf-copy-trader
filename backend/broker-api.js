@@ -352,9 +352,9 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const resetLink = `${FRONTEND_URL}/reset-password?token=${token}`;
 
     if (resend) {
-      await resend.emails.send({
+      const { data, error: resendError } = await resend.emails.send({
         from: 'HF Copy Trader <onboarding@resend.dev>',
-        to: target.email,
+        to: [target.email],
         subject: 'Reset your HF Copy Trader password',
         html: `
           <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #334155;">
@@ -370,6 +370,13 @@ app.post('/api/auth/forgot-password', async (req, res) => {
           </div>
         `
       });
+
+      if (resendError) {
+        console.error('[RESEND ERROR]', resendError);
+        // We still return 200 to the frontend for security, but we log the error
+      } else {
+        console.log('[RESEND SUCCESS]', data);
+      }
     } else {
       console.log(`[DEV] Password reset for ${target.email}: ${resetLink}`);
     }
