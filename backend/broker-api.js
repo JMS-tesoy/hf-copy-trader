@@ -9,6 +9,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
+const { Resend } = require('resend');
 
 // --- Configuration ---
 const ADMIN_API_KEY = process.env.API_KEY || 'changeme-generate-a-real-key';
@@ -18,6 +19,9 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD || '';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const COOKIE_OPTS = { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 };
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 const app = express();
 app.use(cors({ credentials: true, origin: FRONTEND_URL }));
@@ -107,6 +111,10 @@ pg.query(`
   ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
   ALTER TABLE masters ADD COLUMN IF NOT EXISTS email VARCHAR(255);
   ALTER TABLE masters ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64);
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64);
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
 
   -- Indexes for 10K+ user scale
   CREATE INDEX IF NOT EXISTS idx_trade_audit_master ON trade_audit_log(master_id);
@@ -311,6 +319,99 @@ app.post('/api/auth/login', async (req, res) => {
 app.post('/api/auth/logout', (req, res) => {
   res.clearCookie('auth_token');
   res.json({ status: 'logged out' });
+});
+
+// POST /api/auth/forgot-password — Request reset token
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ error: 'Valid email is required' });
+  }
+
+  try {
+    const emailLower = email.trim().toLowerCase();
+    // Check both users and masters
+    const userRes = await pg.query('SELECT id, name, "email", \'user\' as role FROM users WHERE email = $1', [emailLower]);
+    const masterRes = await pg.query('SELECT id, name, "email", \'master\' as role FROM masters WHERE email = $1', [emailLower]);
+
+    const target = userRes.rows[0] || masterRes.rows[0];
+    if (!target) {
+      // Return success anyway to prevent email enumeration (security best practice)
+      return res.json({ status: 'If this email exists, a reset link has been sent' });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + 3600000); // 1 hour from now
+
+    const table = target.role === 'user' ? 'users' : 'masters';
+    await pg.query(
+      `UPDATE ${table} SET reset_token = $1, reset_expires = $2 WHERE id = $3`,
+      [token, expires, target.id]
+    );
+
+    const resetLink = `${FRONTEND_URL}/reset-password?token=${token}`;
+
+    if (resend) {
+      await resend.emails.send({
+        from: 'HF Copy Trader <onboarding@resend.dev>',
+        to: target.email,
+        subject: 'Reset your HF Copy Trader password',
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #334155;">
+            <h1 style="color: #0f172a; font-size: 24px; font-weight: 700;">Reset your password</h1>
+            <p style="font-size: 16px; line-height: 24px;">Hello ${target.name},</p>
+            <p style="font-size: 16px; line-height: 24px;">We received a request to reset your password. Click the button below to choose a new one. This link expires in 1 hour.</p>
+            <div style="margin: 32px 0;">
+              <a href="${resetLink}" style="background: #10b981; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block;">Reset Password</a>
+            </div>
+            <p style="font-size: 14px; color: #64748b;">If you didn't request this, you can safely ignore this email.</p>
+            <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 32px 0;" />
+            <p style="font-size: 12px; color: #94a3b8;">&copy; 2026 HF Copy Trader. High-frequency real-time copy trading platform.</p>
+          </div>
+        `
+      });
+    } else {
+      console.log(`[DEV] Password reset for ${target.email}: ${resetLink}`);
+    }
+
+    res.json({ status: 'If this email exists, a reset link has been sent' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/reset-password — Update password using token
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { token, password } = req.body;
+  if (!token || !password || password.length < 8) {
+    return res.status(400).json({ error: 'Token and a password of at least 8 characters are required' });
+  }
+
+  try {
+    const hash = await bcrypt.hash(password, 10);
+
+    // Check users
+    let result = await pg.query(
+      'UPDATE users SET password_hash = $1, reset_token = NULL, reset_expires = NULL WHERE reset_token = $2 AND reset_expires > NOW() RETURNING id',
+      [hash, token]
+    );
+
+    if (result.rows.length === 0) {
+      // Check masters
+      result = await pg.query(
+        'UPDATE masters SET password_hash = $1, reset_token = NULL, reset_expires = NULL WHERE reset_token = $2 AND reset_expires > NOW() RETURNING id',
+        [hash, token]
+      );
+    }
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    res.json({ status: 'password updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/auth/me — Current session info (used by frontend to check auth state)

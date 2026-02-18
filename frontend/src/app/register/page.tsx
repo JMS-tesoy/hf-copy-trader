@@ -212,12 +212,7 @@ export default function RegisterPage() {
             </div>
 
             <div className="pt-1">
-              <div className="flex justify-between items-end mb-1.5">
-                <label className="block text-sm font-medium text-slate-300">Password</label>
-                <Link href="/forgot-password" className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors">
-                  Forgot password?
-                </Link>
-              </div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Password</label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
