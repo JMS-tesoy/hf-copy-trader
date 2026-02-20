@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTradeSocket } from '@/lib/useTradeSocket';
 import { API } from '@/lib/api';
 import { Card } from '@/components/ui/Card';
@@ -26,22 +26,22 @@ export default function AnalyticsPage() {
   const [symbolFilter, setSymbolFilter] = useState<string>('all');
   const [timeRange, setTimeRange] = useState<string>('all');
 
-  // Load historical trades on mount
-  useEffect(() => {
-    fetch(`${API}/trades/history?limit=500`)
-      .then((res) => res.json())
-      .then((data) => {
-        const trades: Trade[] = data.map((t: any) => ({
-          master_id: t.master_id,
-          symbol: t.symbol,
-          action: t.action,
-          price: t.price,
-          timestamp: new Date(t.received_at),
-        }));
-        setHistory(trades);
-      })
-      .catch(() => {});
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/trades/history?limit=500`);
+      const data = await res.json();
+      const trades: Trade[] = data.map((t: any) => ({
+        master_id: t.master_id,
+        symbol: t.symbol,
+        action: t.action,
+        price: t.price,
+        timestamp: new Date(t.received_at),
+      }));
+      setHistory(trades);
+    } catch {}
   }, []);
+
+  useEffect(() => { loadHistory(); }, [loadHistory]);
 
   // Live trades via WebSocket
   useTradeSocket((trade: any) => {
