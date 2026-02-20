@@ -14,6 +14,7 @@ const { Resend } = require('resend');
 // --- Configuration ---
 const ADMIN_API_KEY = process.env.API_KEY || 'changeme-generate-a-real-key';
 const VALID_ACTIONS = ['BUY', 'SELL', 'CLOSE_BUY', 'CLOSE_SELL', 'MODIFY'];
+const TOTAL_SHARDS = parseInt(process.env.TOTAL_SHARDS) || 3;
 const JWT_SECRET = process.env.JWT_SECRET || 'changeme-jwt-secret';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD || '';
@@ -30,8 +31,8 @@ app.use(cookieParser());
 
 // --- Redis with reconnect strategy ---
 const redis = new Redis({
-  host: "127.0.0.1",
-  port: 6379,
+  host: process.env.REDIS_HOST || "127.0.0.1",
+  port: parseInt(process.env.REDIS_PORT) || 6379,
   retryStrategy: (times) => Math.min(times * 100, 3000),
   maxRetriesPerRequest: null
 });
@@ -741,7 +742,8 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
 
   const messageBuffer = TradeSignal.encode(TradeSignal.create(payload)).finish();
 
-  redis.publish('channel:global_trades', messageBuffer).catch((err) => {
+  const shardId = parsedMasterId % TOTAL_SHARDS;
+  redis.publish(`channel:shard_${shardId}`, messageBuffer).catch((err) => {
     console.error('Redis publish failed:', err.message);
   });
 
