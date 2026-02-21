@@ -19,6 +19,7 @@ interface MasterStats {
   id: number;
   name: string;
   email: string;
+  bio: string | null;
   status: string;
   api_key: string;
   created_at: string;
@@ -73,6 +74,7 @@ export default function MasterPortalPage() {
   // Settings
   const [sName, setSName] = useState('');
   const [sEmail, setSEmail] = useState('');
+  const [sBio, setSBio] = useState('');
   const [sPassword, setSPassword] = useState('');
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState('');
@@ -86,6 +88,7 @@ export default function MasterPortalPage() {
       setStats(data);
       setSName(data.name);
       setSEmail(data.email ?? '');
+      setSBio(data.bio ?? '');
     } catch (err: any) {
       setStatsError(err.message);
     }
@@ -155,6 +158,7 @@ export default function MasterPortalPage() {
       const body: Record<string, string> = {};
       if (sName !== stats?.name) body.name = sName;
       if (sEmail !== (stats?.email ?? '')) body.email = sEmail;
+      if (sBio !== (stats?.bio ?? '')) body.bio = sBio;
       if (sPassword) body.password = sPassword;
       if (Object.keys(body).length === 0) { setSettingsMsg('No changes to save.'); return; }
       const res = await fetch(`${API}/master-me/profile`, {
@@ -431,8 +435,9 @@ export default function MasterPortalPage() {
               )}
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Full name</label>
+                <label htmlFor="m-name" className="block text-sm font-medium text-slate-300 mb-1.5">Full name</label>
                 <input
+                  id="m-name"
                   type="text"
                   value={sName}
                   onChange={e => setSName(e.target.value)}
@@ -442,8 +447,9 @@ export default function MasterPortalPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Email address</label>
+                <label htmlFor="m-email" className="block text-sm font-medium text-slate-300 mb-1.5">Email address</label>
                 <input
+                  id="m-email"
                   type="email"
                   value={sEmail}
                   onChange={e => setSEmail(e.target.value)}
@@ -452,10 +458,27 @@ export default function MasterPortalPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                <label htmlFor="m-bio" className="block text-sm font-medium text-slate-300 mb-1.5">
+                  Bio <span className="text-slate-500 font-normal">(shown to potential subscribers)</span>
+                </label>
+                <textarea
+                  id="m-bio"
+                  value={sBio}
+                  onChange={e => setSBio(e.target.value)}
+                  rows={3}
+                  maxLength={300}
+                  placeholder="e.g. Scalping specialist focusing on EURUSD and GBPUSD. 5+ years experience."
+                  className="w-full bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors resize-none"
+                />
+                <p className="text-[10px] text-slate-600 mt-1">{sBio.length}/300</p>
+              </div>
+
+              <div>
+                <label htmlFor="m-pwd" className="block text-sm font-medium text-slate-300 mb-1.5">
                   New password <span className="text-slate-500 font-normal">(leave blank to keep current)</span>
                 </label>
                 <input
+                  id="m-pwd"
                   type="password"
                   value={sPassword}
                   onChange={e => setSPassword(e.target.value)}

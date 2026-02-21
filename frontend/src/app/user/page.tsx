@@ -108,8 +108,7 @@ export default function UserPage() {
         fetch(`${API}/users/${userId}`, { headers: adminHeaders() }),
         fetch(`${API}/users/${userId}/trades?limit=${limit}&offset=${page * limit}`, { headers: adminHeaders() }),
       ]);
-      const userData = await userRes.json();
-      const tradesData = await tradesRes.json();
+      const [userData, tradesData] = await Promise.all([userRes.json(), tradesRes.json()]);
 
       setSelectedUser(userData);
       setTrades(tradesData.trades || tradesData);
@@ -635,8 +634,9 @@ export default function UserPage() {
                                 ) : (
                                   <>
                                     <div className="flex items-center gap-2">
-                                      <label className="text-xs text-gray-500 dark:text-slate-400">Lot:</label>
+                                      <label htmlFor={`lot-${m.id}`} className="text-xs text-gray-500 dark:text-slate-400">Lot:</label>
                                       <input
+                                        id={`lot-${m.id}`}
                                         type="number"
                                         step="0.01"
                                         min="0.01"
@@ -671,8 +671,9 @@ export default function UserPage() {
                     <h3 className="text-sm font-semibold mb-6">Account Settings</h3>
                     <div className="space-y-4 max-w-md">
                       <div>
-                        <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">Name</label>
+                        <label htmlFor="edit-name" className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">Name</label>
                         <input
+                          id="edit-name"
                           type="text"
                           value={editName}
                           onChange={(e) => setEditName(e.target.value)}
@@ -680,8 +681,9 @@ export default function UserPage() {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">Email</label>
+                        <label htmlFor="edit-email" className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">Email</label>
                         <input
+                          id="edit-email"
                           type="email"
                           value={editEmail}
                           onChange={(e) => setEditEmail(e.target.value)}

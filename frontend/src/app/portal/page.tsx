@@ -1,16 +1,25 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
 import { API } from '@/lib/api';
 import { PowerIcon } from '@/components/ui/PowerIcon';
 import { SubscriptionSettingsPanel, type SubscriptionFull } from '@/components/SubscriptionSettingsPanel';
+import { Activity, TrendingUp, DollarSign, BarChart3 } from 'lucide-react';
+import { StatCard } from '@/components/ui/StatCard';
+import { LiveFeed } from '@/components/trade/LiveFeed';
+import { useTradeSocket } from '@/lib/useTradeSocket';
+import { SymbolDistChart } from '@/components/charts/SymbolDistChart';
+import { MiniAreaChart } from '@/components/charts/MiniAreaChart';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { MasterCard, type LeaderboardMaster } from '@/components/MasterCard';
 
 type Subscription = SubscriptionFull;
 
 interface Trade {
   id: number;
+  master_id: number;
   symbol: string;
   action: string;
   price: number;
@@ -19,14 +28,19 @@ interface Trade {
   tp: number;
   status: string;
   copied_at: string;
+  profit_pips?: number;
+  closed_at?: string;
 }
 
-interface Master {
-  id: number;
-  name: string;
+interface LiveTrade {
+  master_id: number;
+  symbol: string;
+  action: string;
+  price: number;
+  timestamp: Date;
 }
 
-const tabs = ['My Trades', 'Subscriptions', 'Settings'] as const;
+const tabs = ['Overview', 'My Trades', 'Subscriptions', 'Settings'] as const;
 type Tab = typeof tabs[number];
 
 function apiMe(path = '', opts: RequestInit = {}) {
@@ -36,7 +50,7 @@ function apiMe(path = '', opts: RequestInit = {}) {
 export default function PortalPage() {
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>('My Trades');
+  const [tab, setTab] = useState<Tab>('Overview');
 
   // Trades state
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -45,21 +59,49 @@ export default function PortalPage() {
   const [tradeStatus, setTradeStatus] = useState('all');
   const LIMIT = 20;
 
+  // Filter state
+  const [symbolFilter, setSymbolFilter] = useState('');
+  const [masterFilter, setMasterFilter] = useState('');
+
   // Subscriptions state
   const [subs, setSubs] = useState<Subscription[]>([]);
-  const [masters, setMasters] = useState<Master[]>([]);
-  const [subMasterId, setSubMasterId] = useState('');
-  const [subLot, setSubLot] = useState('1');
   const [selectedSub, setSelectedSub] = useState<Subscription | null>(null);
 
-  // Settings state
+  // Leaderboard state
+  const [leaderboard, setLeaderboard] = useState<LeaderboardMaster[]>([]);
+  const [lbSort, setLbSort] = useState<'win_rate' | 'followers' | 'signals'>('win_rate');
+
+  // Settings state — initialized from user once it loads
   const [settingsName, setSettingsName] = useState('');
   const [settingsEmail, setSettingsEmail] = useState('');
   const [settingsPwd, setSettingsPwd] = useState('');
   const [settingsMsg, setSettingsMsg] = useState('');
+  const [prevUser, setPrevUser] = useState(user);
+  if (prevUser !== user && user) {
+    setPrevUser(user);
+    setSettingsName(user.name);
+    setSettingsEmail(user.email);
+  }
+
+  // Danger zone
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+
+  // Live feed
+  const [liveTrades, setLiveTrades] = useState<LiveTrade[]>([]);
+  const subsRef = useRef(subs);
+  subsRef.current = subs;
+
+  const { status: wsStatus } = useTradeSocket(useCallback((trade: any) => {
+    const subMasterIds = new Set(subsRef.current.map(s => s.master_id));
+    if (!subMasterIds.has(trade.master_id)) return;
+    setLiveTrades(prev => [{ ...trade, timestamp: new Date() }, ...prev].slice(0, 50));
+  }, []));
 
   const loadTrades = useCallback(async (offset = 0, status = tradeStatus) => {
     const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
+    if (symbolFilter) params.set('symbol', symbolFilter);
+    if (masterFilter) params.set('master_id', masterFilter);
     const res = await apiMe(`/me/trades?${params}`);
     if (!res.ok) return;
     const data = await res.json();
@@ -68,7 +110,7 @@ export default function PortalPage() {
     setTrades(filtered);
     setTradeTotal(data.total);
     setTradeOffset(offset);
-  }, [tradeStatus]);
+  }, [tradeStatus, symbolFilter, masterFilter]);
 
   const loadSubs = useCallback(async () => {
     const res = await apiMe('/me');
@@ -77,40 +119,26 @@ export default function PortalPage() {
     setSubs(data.subscriptions || []);
   }, []);
 
-  const loadMasters = useCallback(async () => {
-    const res = await apiMe('/masters/public');
-    if (!res.ok) return;
-    setMasters(await res.json());
-  }, []);
-
-  useEffect(() => {
-    if (user) {
-      setSettingsName(user.name);
-      setSettingsEmail(user.email);
-    }
-  }, [user]);
+  const loadLeaderboard = useCallback(async (sort: string = lbSort) => {
+    const res = await fetch(`${API}/masters/leaderboard?sort=${sort}`);
+    if (res.ok) setLeaderboard(await res.json());
+  }, [lbSort]);
 
   useEffect(() => { loadTrades(0, tradeStatus); }, [tradeStatus]);
-  useEffect(() => { loadSubs(); loadMasters(); }, []);
+  useEffect(() => { loadSubs(); loadLeaderboard(); }, []);
 
   const handleLogout = async () => {
     await logout();
     router.push('/login');
   };
 
-  const handleSubscribe = async () => {
-    if (!subMasterId) return;
+  const handleSubscribe = async (masterId: number, lotMultiplier: number) => {
     const res = await apiMe('/me/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ master_id: Number(subMasterId), lot_multiplier: Number(subLot) }),
+      body: JSON.stringify({ master_id: masterId, lot_multiplier: lotMultiplier }),
     });
-    if (res.ok) { setSubMasterId(''); setSubLot('1'); loadSubs(); }
-  };
-
-  const handleUnsubscribe = async (masterId: number) => {
-    await apiMe(`/me/subscribe/${masterId}`, { method: 'DELETE' });
-    loadSubs();
+    if (res.ok) { loadSubs(); loadLeaderboard(); }
   };
 
   const handleSaveSettings = async (e: React.FormEvent) => {
@@ -136,10 +164,64 @@ export default function PortalPage() {
     }
   };
 
+  const handleDeleteAccount = async () => {
+    setDeletingAccount(true);
+    try {
+      const res = await apiMe('/me', { method: 'DELETE' });
+      if (res.ok) {
+        await logout();
+        router.push('/login');
+      }
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
+
+  // Derived data for Overview tab
+  const openPositions = trades.filter(t => t.status === 'open').length;
+  const activeSubs = subs.filter(s => s.status === 'active').length;
+  const avgWinRate = useMemo(() => {
+    const rates = subs.filter(s => s.win_rate != null).map(s => s.win_rate as number);
+    if (!rates.length) return null;
+    return Math.round(rates.reduce((a, b) => a + b, 0) / rates.length);
+  }, [subs]);
+
+  const symbolData = useMemo(() => {
+    const counts: Record<string, number> = {};
+    trades.forEach(t => { counts[t.symbol] = (counts[t.symbol] || 0) + 1; });
+    return Object.entries(counts).map(([symbol, count]) => ({ symbol, count }));
+  }, [trades]);
+
+  const plData = useMemo(() => {
+    const closed = trades.filter(t => t.status === 'closed' && t.profit_pips != null && t.closed_at);
+    if (!closed.length) return [];
+    const byDay: Record<string, number> = {};
+    closed.forEach(t => {
+      const day = new Date(t.closed_at!).toISOString().slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + (t.profit_pips || 0);
+    });
+    const days = Object.keys(byDay).sort();
+    let cumulative = 0;
+    return days.map(day => {
+      cumulative += byDay[day];
+      return { time: day, value: Math.round(cumulative * 10) / 10 };
+    });
+  }, [trades]);
+
+  // Client-side filter for My Trades display
+  const displayedTrades = useMemo(() => {
+    return trades
+      .filter(t => !symbolFilter || t.symbol.toLowerCase().includes(symbolFilter.toLowerCase()))
+      .filter(t => !masterFilter || t.master_id === Number(masterFilter));
+  }, [trades, symbolFilter, masterFilter]);
+
   const actionColor: Record<string, string> = {
     BUY: 'text-green-400', SELL: 'text-red-400',
     CLOSE_BUY: 'text-emerald-400', CLOSE_SELL: 'text-rose-400', MODIFY: 'text-yellow-400',
   };
+
+  const wsStatusColor = wsStatus === 'connected' ? 'text-emerald-400' : wsStatus === 'connecting' ? 'text-amber-400' : 'text-red-400';
+  const wsStatusLabel = wsStatus === 'connected' ? 'Live' : wsStatus === 'connecting' ? 'Connecting...' : 'Disconnected';
 
   return (
     <div className="min-h-screen bg-slate-950 text-gray-100">
@@ -155,6 +237,17 @@ export default function PortalPage() {
           historyUrl={(id) => `${API}/me/subscriptions/${id}/history`}
         />
       )}
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={handleDeleteAccount}
+        title="Delete Account"
+        message="This will permanently delete your account, all subscriptions, and trade history. This cannot be undone."
+        confirmText="Delete permanently"
+        loading={deletingAccount}
+      />
+
       {/* Header */}
       <header className="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
         <div>
@@ -175,6 +268,23 @@ export default function PortalPage() {
         </div>
       </header>
 
+      {/* Stats Bar */}
+      <div className="bg-slate-900/60 border-b border-slate-800">
+        <div className="max-w-5xl mx-auto grid grid-cols-4 divide-x divide-slate-800">
+          {[
+            { label: 'Open Positions', value: openPositions },
+            { label: 'Active Subs', value: activeSubs },
+            { label: 'Total Trades', value: tradeTotal },
+            { label: 'Balance', value: `$${user?.balance?.toLocaleString() ?? '—'}` },
+          ].map(({ label, value }) => (
+            <div key={label} className="px-5 py-3">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
+              <p className="text-base font-semibold text-white mt-0.5">{value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="max-w-5xl mx-auto px-4 py-6">
         {/* Tabs */}
         <div className="flex gap-1 mb-6 border-b border-slate-800">
@@ -193,9 +303,88 @@ export default function PortalPage() {
           ))}
         </div>
 
+        {/* Overview Tab */}
+        {tab === 'Overview' && (
+          <div className="space-y-6">
+            {/* StatCards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="Account Balance" sub="current" icon={DollarSign}>
+                ${user?.balance?.toLocaleString() ?? '—'}
+              </StatCard>
+              <StatCard label="Open Positions" sub={`from ${activeSubs} master${activeSubs !== 1 ? 's' : ''}`} icon={Activity}>
+                {openPositions}
+              </StatCard>
+              <StatCard label="Total Trades" sub="all time" icon={TrendingUp}>
+                {tradeTotal}
+              </StatCard>
+              <StatCard label="Avg Win Rate" sub="across subscriptions" icon={BarChart3}>
+                {avgWinRate != null ? `${avgWinRate}%` : '—'}
+              </StatCard>
+            </div>
+
+            {/* Live feed + Symbol exposure */}
+            <div className="grid md:grid-cols-5 gap-4">
+              {/* Live Signals (60%) */}
+              <div className="md:col-span-3 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col" style={{ minHeight: 320 }}>
+                <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+                  <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">Live Signals</h2>
+                  <span className={`flex items-center gap-1.5 text-xs font-medium ${wsStatusColor}`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                    {wsStatusLabel}
+                  </span>
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  {liveTrades.length === 0 ? (
+                    <div className="flex items-center justify-center h-full py-16">
+                      <p className="text-sm text-slate-600">Waiting for signals from your masters...</p>
+                    </div>
+                  ) : (
+                    <LiveFeed trades={liveTrades} maxItems={15} />
+                  )}
+                </div>
+              </div>
+
+              {/* Symbol Exposure (40%) */}
+              <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-4">Your Symbol Exposure</h2>
+                <SymbolDistChart data={symbolData} maxItems={6} />
+              </div>
+            </div>
+
+            {/* P&L Mini Chart */}
+            {plData.length > 0 && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">Cumulative P&L (pips)</h2>
+                <MiniAreaChart data={plData} color="#22c55e" height={120} />
+              </div>
+            )}
+          </div>
+        )}
+
         {/* My Trades */}
         {tab === 'My Trades' && (
           <div>
+            {/* Filters */}
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <input
+                type="text"
+                placeholder="Symbol…"
+                value={symbolFilter}
+                onChange={e => setSymbolFilter(e.target.value)}
+                className="w-32 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500 placeholder-slate-600"
+              />
+              <select
+                value={masterFilter}
+                onChange={e => setMasterFilter(e.target.value)}
+                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500"
+              >
+                <option value="">All Masters</option>
+                {subs.map(s => (
+                  <option key={s.master_id} value={s.master_id}>{s.master_name}</option>
+                ))}
+              </select>
+            </div>
+
             <div className="flex items-center gap-3 mb-4">
               <span className="text-sm text-slate-400">Status:</span>
               {['all', 'open', 'closed'].map(s => (
@@ -227,9 +416,9 @@ export default function PortalPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {trades.length === 0 ? (
+                  {displayedTrades.length === 0 ? (
                     <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">No trades found</td></tr>
-                  ) : trades.map(t => (
+                  ) : displayedTrades.map(t => (
                     <tr key={t.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                       <td className="px-4 py-3 font-medium text-white">{t.symbol}</td>
                       <td className={`px-4 py-3 font-medium ${actionColor[t.action] || ''}`}>{t.action}</td>
@@ -313,49 +502,45 @@ export default function PortalPage() {
               )}
             </div>
 
-            {/* Subscribe to a master */}
+            {/* Master discovery grid */}
             <div>
-              <h2 className="text-sm font-medium text-slate-400 mb-3">Subscribe to a Master</h2>
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex items-end gap-3">
-                <div className="flex-1">
-                  <label className="block text-xs text-slate-400 mb-1">Master trader</label>
-                  <select
-                    value={subMasterId}
-                    onChange={e => setSubMasterId(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none"
-                  >
-                    <option value="">Select a master…</option>
-                    {masters.filter(m => !subs.find(s => s.master_id === m.id)).map(m => (
-                      <option key={m.id} value={m.id}>{m.name}</option>
-                    ))}
-                  </select>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-medium text-slate-400">Browse Masters</h2>
+                <div className="flex gap-1">
+                  {(['win_rate', 'followers', 'signals'] as const).map(s => (
+                    <button
+                      key={s}
+                      onClick={() => { setLbSort(s); loadLeaderboard(s); }}
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                        lbSort === s ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {s === 'win_rate' ? 'Win Rate' : s === 'followers' ? 'Followers' : 'Signals'}
+                    </button>
+                  ))}
                 </div>
-                <div className="w-28">
-                  <label className="block text-xs text-slate-400 mb-1">Lot multiplier</label>
-                  <input
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={subLot}
-                    onChange={e => setSubLot(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none"
-                  />
-                </div>
-                <button
-                  onClick={handleSubscribe}
-                  disabled={!subMasterId}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-medium rounded-lg transition-colors"
-                >
-                  Subscribe
-                </button>
               </div>
+              {leaderboard.length === 0 ? (
+                <p className="text-slate-500 text-sm">No masters available.</p>
+              ) : (
+                <div className="grid md:grid-cols-2 gap-3">
+                  {leaderboard.map(m => (
+                    <MasterCard
+                      key={m.id}
+                      master={m}
+                      isSubscribed={subs.some(s => s.master_id === m.id)}
+                      onSubscribe={handleSubscribe}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
 
         {/* Settings */}
         {tab === 'Settings' && (
-          <div className="max-w-md">
+          <div className="max-w-md space-y-6">
             <form onSubmit={handleSaveSettings} className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
               <h2 className="text-sm font-medium text-white">Account Settings</h2>
               {settingsMsg && (
@@ -364,8 +549,9 @@ export default function PortalPage() {
                 </p>
               )}
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Name</label>
+                <label htmlFor="settings-name" className="block text-xs text-slate-400 mb-1">Name</label>
                 <input
+                  id="settings-name"
                   type="text"
                   value={settingsName}
                   onChange={e => setSettingsName(e.target.value)}
@@ -373,8 +559,9 @@ export default function PortalPage() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Email</label>
+                <label htmlFor="settings-email" className="block text-xs text-slate-400 mb-1">Email</label>
                 <input
+                  id="settings-email"
                   type="email"
                   value={settingsEmail}
                   onChange={e => setSettingsEmail(e.target.value)}
@@ -382,8 +569,9 @@ export default function PortalPage() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-400 mb-1">New password <span className="text-slate-600">(leave blank to keep current)</span></label>
+                <label htmlFor="settings-pwd" className="block text-xs text-slate-400 mb-1">New password <span className="text-slate-600">(leave blank to keep current)</span></label>
                 <input
+                  id="settings-pwd"
                   type="password"
                   value={settingsPwd}
                   onChange={e => setSettingsPwd(e.target.value)}
@@ -404,6 +592,25 @@ export default function PortalPage() {
                 </div>
               </div>
             </form>
+
+            {/* Danger Zone */}
+            <div className="border border-red-500/30 rounded-xl p-6">
+              <h2 className="text-sm font-semibold text-red-400 mb-1">Danger Zone</h2>
+              <div className="flex items-start justify-between gap-4 mt-3">
+                <div>
+                  <p className="text-sm font-medium text-white">Delete Account</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Permanently delete your account and all associated data. This cannot be undone.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="shrink-0 px-3 py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 text-xs font-medium rounded-lg border border-red-500/30 transition-colors"
+                >
+                  Delete Account
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

@@ -166,6 +166,13 @@ pg.query(`
   ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
   ALTER TABLE masters ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64);
   ALTER TABLE masters ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS bio TEXT;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS daily_loss_limit DOUBLE PRECISION;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS max_drawdown_percent DOUBLE PRECISION;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS total_profit DOUBLE PRECISION DEFAULT 0;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS total_trades INTEGER DEFAULT 0;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS win_rate DOUBLE PRECISION;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
   ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS max_position_size DOUBLE PRECISION;
   ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS max_concurrent_positions INTEGER;
   ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS allowed_symbols TEXT[];
@@ -547,12 +554,22 @@ app.get('/api/me/trades', requireUserJWT, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 50, 500);
     const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const symbol = req.query.symbol?.trim() || null;
+    const masterId = req.query.master_id ? parseInt(req.query.master_id) : null;
+
+    const conditions = ['user_id = $1'];
+    const params = [req.userId];
+    let idx = 2;
+    if (symbol) { conditions.push(`symbol ILIKE $${idx++}`); params.push(`%${symbol}%`); }
+    if (masterId) { conditions.push(`master_id = $${idx++}`); params.push(masterId); }
+    const where = conditions.join(' AND ');
+
     const [tradesResult, countResult] = await Promise.all([
       pg.query(
-        'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT $2 OFFSET $3',
-        [req.userId, limit, offset]
+        `SELECT * FROM copied_trades WHERE ${where} ORDER BY copied_at DESC LIMIT $${idx} OFFSET $${idx + 1}`,
+        [...params, limit, offset]
       ),
-      pg.query('SELECT COUNT(*)::int AS count FROM copied_trades WHERE user_id = $1', [req.userId])
+      pg.query(`SELECT COUNT(*)::int AS count FROM copied_trades WHERE ${where}`, params)
     ]);
     res.json({ trades: tradesResult.rows, total: countResult.rows[0].count, limit, offset });
   } catch (err) {
@@ -584,6 +601,17 @@ app.put('/api/me/profile', requireUserJWT, async (req, res) => {
     res.json(result.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Email already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/me — Delete account permanently
+app.delete('/api/me', requireUserJWT, async (req, res) => {
+  try {
+    await pg.query('DELETE FROM users WHERE id = $1', [req.userId]);
+    res.clearCookie('auth_token');
+    res.json({ status: 'deleted' });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -773,6 +801,41 @@ app.get('/api/me/subscriptions/:id/history', requireUserJWT, async (req, res) =>
 // SUBSCRIPTION TIER ENDPOINTS
 // ========================================
 
+// GET /api/masters/leaderboard — Public master leaderboard (no auth required)
+app.get('/api/masters/leaderboard', async (req, res) => {
+  try {
+    const sort = req.query.sort || 'win_rate'; // 'win_rate' | 'followers' | 'signals'
+    const orderBy = sort === 'followers' ? 'subscriber_count DESC'
+                  : sort === 'signals'   ? 'signal_count DESC'
+                  : 'avg_win_rate DESC NULLS LAST';
+    const result = await pg.query(`
+      SELECT m.id, m.name, m.status, m.bio, m.created_at,
+        COALESCE(t.signal_count, 0)     AS signal_count,
+        t.last_signal_at,
+        COALESCE(s.subscriber_count, 0) AS subscriber_count,
+        ROUND(COALESCE(wr.avg_win_rate, 0)::numeric, 1) AS avg_win_rate
+      FROM masters m
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS signal_count, MAX(received_at) AS last_signal_at
+        FROM trade_audit_log GROUP BY master_id
+      ) t ON t.master_id = m.id
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS subscriber_count
+        FROM subscriptions WHERE status = 'active' GROUP BY master_id
+      ) s ON s.master_id = m.id
+      LEFT JOIN (
+        SELECT master_id, AVG(win_rate) AS avg_win_rate
+        FROM subscriptions WHERE win_rate IS NOT NULL GROUP BY master_id
+      ) wr ON wr.master_id = m.id
+      WHERE m.status = 'active'
+      ORDER BY ${orderBy}
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/subscription-tiers — List all tiers (public)
 app.get('/api/subscription-tiers', async (req, res) => {
   try {
@@ -862,7 +925,7 @@ app.get('/api/subscriptions/:id/history', requireAdminKey, async (req, res) => {
 app.get('/api/master-me', requireMasterJWT, async (req, res) => {
   try {
     const result = await pg.query(`
-      SELECT m.id, m.name, m.email, m.status, m.api_key, m.created_at,
+      SELECT m.id, m.name, m.email, m.status, m.api_key, m.bio, m.created_at,
         COALESCE(t.signal_count, 0) AS signal_count,
         t.last_signal_at,
         COALESCE(s.subscriber_count, 0) AS subscriber_count
@@ -902,9 +965,9 @@ app.get('/api/master-me/trades', requireMasterJWT, async (req, res) => {
   }
 });
 
-// PUT /api/master-me/profile — Update master's name, email, or password
+// PUT /api/master-me/profile — Update master's name, email, password, or bio
 app.put('/api/master-me/profile', requireMasterJWT, async (req, res) => {
-  const { name, email, password } = req.body;
+  const { name, email, password, bio } = req.body;
   try {
     const fields = [];
     const values = [];
@@ -917,10 +980,11 @@ app.put('/api/master-me/profile', requireMasterJWT, async (req, res) => {
       fields.push(`password_hash = $${idx++}`);
       values.push(hash);
     }
+    if (bio !== undefined) { fields.push(`bio = $${idx++}`); values.push(bio); }
     if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
     values.push(req.masterId);
     const result = await pg.query(
-      `UPDATE masters SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, status, api_key, created_at`,
+      `UPDATE masters SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, status, api_key, bio, created_at`,
       values
     );
     res.json(result.rows[0]);
