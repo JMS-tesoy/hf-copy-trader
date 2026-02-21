@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { PowerIcon } from '@/components/ui/PowerIcon';
 import { SubscriberStack } from '@/components/SubscriberStack';
+import { SubscriberProfileModal } from '@/components/SubscriberProfileModal';
 
 const LIMIT = 20;
 
@@ -66,6 +67,8 @@ export default function MasterPortalPage() {
   
   // Subscribers
   const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
+  const [selectedSubscriber, setSelectedSubscriber] = useState<Subscriber | null>(null);
+  const [showProfileModal, setShowProfileModal] = useState(false);
 
   // Trades
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -270,7 +273,13 @@ export default function MasterPortalPage() {
                   {/* Subscribers card with stacked avatars */}
                   <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                     <div className="flex items-center gap-2 mb-3"><Users className="w-5 h-5 text-emerald-400" /><span className="text-slate-400 text-xs">Subscribers</span></div>
-                    <SubscriberStack subscribers={subscribers} />
+                    <SubscriberStack
+                      subscribers={subscribers}
+                      onSubscriberClick={(sub) => {
+                        setSelectedSubscriber(sub);
+                        setShowProfileModal(true);
+                      }}
+                    />
                   </div>
 
                   {[
@@ -524,6 +533,13 @@ export default function MasterPortalPage() {
             </form>
           </div>
         )}
+
+        {/* Subscriber Profile Modal */}
+        <SubscriberProfileModal
+          subscriber={selectedSubscriber}
+          isOpen={showProfileModal}
+          onClose={() => setShowProfileModal(false)}
+        />
       </div>
     </div>
   );

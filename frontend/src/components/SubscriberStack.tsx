@@ -10,26 +10,27 @@ interface Subscriber {
 interface SubscriberStackProps {
   subscribers: Subscriber[];
   showLabel?: boolean;
+  onSubscriberClick?: (subscriber: Subscriber) => void;
 }
 
 const colorPalette = [
-  'bg-blue-500',
-  'bg-purple-500',
-  'bg-pink-500',
-  'bg-red-500',
-  'bg-orange-500',
-  'bg-yellow-500',
-  'bg-green-500',
-  'bg-teal-500',
-  'bg-cyan-500',
-  'bg-indigo-500',
+  'bg-slate-600',
+  'bg-slate-700',
+  'bg-gray-600',
+  'bg-gray-700',
+  'bg-blue-700',
+  'bg-indigo-700',
+  'bg-emerald-700',
+  'bg-teal-700',
+  'bg-cyan-700',
+  'bg-stone-700',
 ];
 
 function getSubscriberColor(id: number): string {
   return colorPalette[id % colorPalette.length];
 }
 
-export function SubscriberStack({ subscribers, showLabel = false }: SubscriberStackProps) {
+export function SubscriberStack({ subscribers, showLabel = false, onSubscriberClick }: SubscriberStackProps) {
   const displayedSubscribers = useMemo(() => {
     return subscribers.slice(0, 3);
   }, [subscribers]);
@@ -42,18 +43,19 @@ export function SubscriberStack({ subscribers, showLabel = false }: SubscriberSt
 
   return (
     <div className="flex items-center gap-3">
-      <div className="flex -space-x-2">
+      <div className="flex -space-x-1.5">
         {displayedSubscribers.map((sub) => (
-          <div
+          <button
             key={sub.id}
-            className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold ${getSubscriberColor(sub.id)} hover:ring-2 hover:ring-white hover:ring-offset-2 hover:ring-offset-slate-900 transition-all`}
+            onClick={() => onSubscriberClick?.(sub)}
+            className={`w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-semibold ${getSubscriberColor(sub.id)} hover:ring-2 hover:ring-white hover:ring-offset-1 hover:ring-offset-slate-900 transition-all cursor-pointer hover:scale-110`}
             title={sub.name}
           >
             {sub.name.charAt(0).toUpperCase()}
-          </div>
+          </button>
         ))}
         {subscribers.length > 3 && (
-          <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold bg-slate-700 hover:bg-slate-600 transition-colors hover:ring-2 hover:ring-white hover:ring-offset-2 hover:ring-offset-slate-900">
+          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-semibold bg-slate-700 hover:bg-slate-600 transition-colors hover:ring-2 hover:ring-white hover:ring-offset-1 hover:ring-offset-slate-900 cursor-default">
             +{subscribers.length - 3}
           </div>
         )}

@@ -978,6 +978,23 @@ app.get('/api/master-me/subscribers', requireMasterJWT, async (req, res) => {
   }
 });
 
+// GET /api/master-me/subscribers/:userId — Get subscriber profile details
+app.get('/api/master-me/subscribers/:userId', requireMasterJWT, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    const result = await pg.query(
+      'SELECT u.id, u.name, u.email, u.balance, u.created_at FROM subscriptions s JOIN users u ON s.user_id = u.id WHERE s.master_id = $1 AND u.id = $2 AND s.status = $3',
+      [req.masterId, userId, 'active']
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Subscriber not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PUT /api/master-me/profile — Update master's name, email, password, or bio
 app.put('/api/master-me/profile', requireMasterJWT, async (req, res) => {
   const { name, email, password, bio } = req.body;
