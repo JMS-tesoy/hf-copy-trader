@@ -325,7 +325,7 @@ export default function PortalPage() {
             {/* Live feed + Symbol exposure */}
             <div className="grid md:grid-cols-5 gap-4">
               {/* Live Signals (60%) */}
-              <div className="md:col-span-3 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col" style={{ minHeight: 320 }}>
+              <div className="md:col-span-3 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200" style={{ minHeight: 320 }}>
                 <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">Live Signals</h2>
                   <span className={`flex items-center gap-1.5 text-xs font-medium ${wsStatusColor}`}>
@@ -345,7 +345,7 @@ export default function PortalPage() {
               </div>
 
               {/* Symbol Exposure (40%) */}
-              <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4">
+              <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
                 <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-4">Your Symbol Exposure</h2>
                 <SymbolDistChart data={symbolData} maxItems={6} />
               </div>
@@ -353,7 +353,7 @@ export default function PortalPage() {
 
             {/* P&L Mini Chart */}
             {plData.length > 0 && (
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
                 <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">Cumulative P&L (pips)</h2>
                 <MiniAreaChart data={plData} color="#22c55e" height={120} />
               </div>
@@ -401,7 +401,7 @@ export default function PortalPage() {
               <span className="ml-auto text-xs text-slate-500">{tradeTotal} total</span>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-800 text-slate-400 text-xs">
@@ -483,7 +483,7 @@ export default function PortalPage() {
                     <button
                       key={s.id}
                       onClick={() => setSelectedSub(s)}
-                      className="w-full bg-slate-900 border border-slate-800 hover:border-cyan-500/50 rounded-xl px-4 py-3 flex items-center gap-4 text-left transition-colors"
+                      className="w-full bg-slate-900 border border-slate-800 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 rounded-xl px-4 py-3 flex items-center gap-4 text-left transition-all duration-200"
                     >
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-white truncate">{s.master_name}</div>
@@ -545,7 +545,7 @@ export default function PortalPage() {
         {/* Settings */}
         {tab === 'Settings' && (
           <div className="max-w-md space-y-6">
-            <form onSubmit={handleSaveSettings} className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+            <form onSubmit={handleSaveSettings} className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
               <h2 className="text-sm font-medium text-white">Account Settings</h2>
               {settingsMsg && (
                 <p className={`text-sm ${settingsMsg === 'Saved.' ? 'text-green-400' : 'text-red-400'}`}>

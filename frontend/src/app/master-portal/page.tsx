@@ -329,7 +329,7 @@ export default function MasterPortalPage() {
         {/* ── TRADE HISTORY ── */}
         {tab === 'Trade History' && (
           <div>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
@@ -384,7 +384,7 @@ export default function MasterPortalPage() {
         {/* ── API KEY ── */}
         {tab === 'API Key' && stats && (
           <div className="max-w-lg space-y-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
               <h3 className="text-sm font-medium text-slate-300 mb-1">Your API Key</h3>
               <p className="text-slate-500 text-xs mb-4">
                 Use this key in your MT5 TradeSender EA as the <code className="text-slate-300">x-api-key</code> header.
@@ -441,7 +441,7 @@ export default function MasterPortalPage() {
               )}
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
               <h3 className="text-sm font-medium text-slate-300 mb-2">MT5 Setup</h3>
               <ol className="text-slate-400 text-xs space-y-1.5 list-decimal list-inside">
                 <li>Copy your API key above</li>
