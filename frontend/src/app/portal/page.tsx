@@ -5,15 +5,9 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
 import { API } from '@/lib/api';
 import { PowerIcon } from '@/components/ui/PowerIcon';
+import { SubscriptionSettingsPanel, type SubscriptionFull } from '@/components/SubscriptionSettingsPanel';
 
-interface Subscription {
-  id: number;
-  master_id: number;
-  master_name: string;
-  master_status: string;
-  lot_multiplier: number;
-  status: string;
-}
+type Subscription = SubscriptionFull;
 
 interface Trade {
   id: number;
@@ -56,6 +50,7 @@ export default function PortalPage() {
   const [masters, setMasters] = useState<Master[]>([]);
   const [subMasterId, setSubMasterId] = useState('');
   const [subLot, setSubLot] = useState('1');
+  const [selectedSub, setSelectedSub] = useState<Subscription | null>(null);
 
   // Settings state
   const [settingsName, setSettingsName] = useState('');
@@ -118,16 +113,6 @@ export default function PortalPage() {
     loadSubs();
   };
 
-  const toggleSubStatus = async (sub: Subscription) => {
-    const newStatus = sub.status === 'active' ? 'paused' : 'active';
-    await apiMe(`/me/subscriptions/${sub.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus }),
-    });
-    loadSubs();
-  };
-
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSettingsMsg('');
@@ -158,6 +143,18 @@ export default function PortalPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-gray-100">
+      {selectedSub && (
+        <SubscriptionSettingsPanel
+          subscription={selectedSub}
+          onClose={() => setSelectedSub(null)}
+          onSaved={() => { setSelectedSub(null); loadSubs(); }}
+          onUnsubscribed={() => { setSelectedSub(null); loadSubs(); }}
+          saveUrl={(id) => `${API}/me/subscriptions/${id}`}
+          deleteUrl={(sub) => `${API}/me/subscribe/${sub.master_id}`}
+          perfUrl={(id) => `${API}/me/subscriptions/${id}/performance`}
+          historyUrl={(id) => `${API}/me/subscriptions/${id}/history`}
+        />
+      )}
       {/* Header */}
       <header className="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
         <div>
@@ -290,27 +287,27 @@ export default function PortalPage() {
               ) : (
                 <div className="space-y-2">
                   {subs.map(s => (
-                    <div key={s.id} className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 flex items-center gap-4">
-                      <div className="flex-1">
-                        <div className="font-medium text-white">{s.master_name}</div>
-                        <div className="text-xs text-slate-500">Lot ×{s.lot_multiplier}</div>
+                    <button
+                      key={s.id}
+                      onClick={() => setSelectedSub(s)}
+                      className="w-full bg-slate-900 border border-slate-800 hover:border-cyan-500/50 rounded-xl px-4 py-3 flex items-center gap-4 text-left transition-colors"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-white truncate">{s.master_name}</div>
+                        <div className="text-xs text-slate-500">
+                          Lot ×{s.lot_multiplier}
+                          {s.total_trades > 0 && ` · ${s.total_trades} trades`}
+                          {s.win_rate != null && ` · ${s.win_rate.toFixed(0)}% win`}
+                        </div>
                       </div>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                        s.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium shrink-0 ${
+                        s.status === 'active' ? 'bg-green-500/20 text-green-400' :
+                        s.status === 'paused' ? 'bg-yellow-500/20 text-yellow-400' :
+                        s.status === 'suspended' ? 'bg-red-500/20 text-red-400' :
+                        'bg-slate-700 text-slate-400'
                       }`}>{s.status}</span>
-                      <button
-                        onClick={() => toggleSubStatus(s)}
-                        className="text-xs text-slate-400 hover:text-white transition-colors"
-                      >
-                        {s.status === 'active' ? 'Pause' : 'Resume'}
-                      </button>
-                      <button
-                        onClick={() => handleUnsubscribe(s.master_id)}
-                        className="text-xs text-red-400 hover:text-red-300 transition-colors"
-                      >
-                        Unsubscribe
-                      </button>
-                    </div>
+                      <span className="text-slate-600 text-sm shrink-0">›</span>
+                    </button>
                   ))}
                 </div>
               )}

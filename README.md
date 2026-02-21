@@ -3,8 +3,14 @@
 ## Prerequisites
 
 - MetaTrader 5 (Build 2000+)
-- Node.js backend running (broker-api on port 4000, worker-server on port 8080)
-- Redis running on 127.0.0.1:6379
+- Backend running (Docker Compose or PM2):
+  - **Docker** (recommended): `docker-compose up -d --build`
+  - **PM2** (development): `cd backend && npx pm2 start ecosystem.config.js`
+- Services:
+  - Nginx load balancer on port **80** (routes WebSocket connections)
+  - broker-api on port **4000** (receives HTTP POST from Master EA)
+  - Redis on 127.0.0.1:6379
+  - PostgreSQL on 127.0.0.1:5432
 
 ## File Setup
 
@@ -70,13 +76,13 @@ The EA monitors your MT5 account for new positions. When you open a trade (manua
 
 ### TradeReceiver (attach to any chart)
 
-The EA connects to the WebSocket server and auto-executes incoming trade signals.
+The EA connects to the Nginx-load-balanced WebSocket server and auto-executes incoming trade signals.
 
 **Inputs:**
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| WSHost | 127.0.0.1 | WebSocket server host |
-| WSPort | 8080 | WebSocket server port |
+| WSHost | 127.0.0.1 | WebSocket server host (Nginx) |
+| WSPort | 80 | WebSocket server port (Nginx load balancer) |
 | LotSize | 0.01 | Trade size per signal |
 | Slippage | 10 | Max slippage (points) |
 | MagicNumber | 123456 | EA magic number |
@@ -86,17 +92,38 @@ The EA connects to the WebSocket server and auto-executes incoming trade signals
 ## Architecture
 
 ```
-┌──────────────┐    HTTP POST     ┌──────────────┐    Redis PubSub    ┌────────────────┐
-│ TradeSender  │ ───────────────► │  broker-api  │ ──────────────────►│ worker-server  │
-│   (MT5 EA)   │                  │  (port 4000) │                    │  (port 8080)   │
-└──────────────┘                  └──────────────┘                    └───────┬────────┘
-                                                                             │ WebSocket
-                                                                             │ (JSON)
-                                                                     ┌───────▼────────┐
-                                                                     │ TradeReceiver   │
-                                                                     │   (MT5 EA)      │
-                                                                     └─────────────────┘
+Master EA (TradeSender)
+       │
+       │ HTTP POST (direct)
+       ▼
+   broker-api (port 4000)
+       │
+       │ Redis PubSub
+       │ hash(master_id % 3)
+       ▼
+   ┌───┴───┬───────┬────────┐
+   │       │       │        │
+shard:0  shard:1  shard:2  (worker-server ports 8081/8082/8083)
+   │       │       │
+   └───┬───┴───┬───┘
+       │       │
+       ▼       ▼
+    Nginx LB (port 80)
+    least_conn routing
+       │
+       ├──────────────────┬──────────────────┐
+       │                  │                  │
+  Follower EA         Follower EA       Browser
+ (TradeReceiver)     (TradeReceiver)    Frontend
+   WebSocket            WebSocket        WebSocket
 ```
+
+**Flow:**
+1. Master EA sends trade via HTTP POST to `broker-api:4000`
+2. `broker-api` hashes `master_id % 3` → publishes to `channel:shard_0/1/2` in Redis
+3. Worker shard subscribes to its channel, broadcasts to its followers via WebSocket
+4. Nginx load balances followers across 3 worker shards (least_conn)
+5. Each shard handles ~5,300 concurrent followers (16,000 total ÷ 3)
 
 ## Troubleshooting
 

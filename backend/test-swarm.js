@@ -5,7 +5,7 @@ const protobuf = require('protobufjs');
 const CLIENTS_COUNT = parseInt(process.argv[2]) || 10000;
 const BATCH_SIZE = 500;                   // Connect 500 at a time to avoid EMFILE
 const BATCH_DELAY = 200;                  // 200ms between batches
-const SERVER_URL = 'ws://127.0.0.1:8080';
+const SERVER_URL = 'ws://127.0.0.1:80';
 
 // Load Protobuf
 const root = protobuf.loadSync("trade.proto");

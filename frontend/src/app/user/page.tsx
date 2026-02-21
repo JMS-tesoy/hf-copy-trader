@@ -11,6 +11,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { useToast } from '@/components/notifications/useToast';
 import { Users, Briefcase, Link2, Settings, Trash2, Edit2, Filter, X } from 'lucide-react';
+import { SubscriptionSettingsPanel, type SubscriptionFull } from '@/components/SubscriptionSettingsPanel';
 
 interface User {
   id: number;
@@ -28,15 +29,7 @@ interface Master {
   signal_count: number;
 }
 
-interface Subscription {
-  id: number;
-  user_id: number;
-  master_id: number;
-  lot_multiplier: number;
-  status: string;
-  master_name: string;
-  master_status: string;
-}
+type Subscription = SubscriptionFull;
 
 interface CopiedTrade {
   id: number;
@@ -79,15 +72,8 @@ export default function UserPage() {
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<{ userId: number; userName: string } | null>(null);
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null);
 
-  // Edit subscription
-  const [editSubModal, setEditSubModal] = useState<{
-    subscriptionId: number;
-    masterName: string;
-    currentMultiplier: number;
-    currentStatus: string;
-  } | null>(null);
-  const [savingSubscription, setSavingSubscription] = useState(false);
-  const [lotMultiplierInput, setLotMultiplierInput] = useState('1.0');
+  // Edit subscription (panel)
+  const [selectedSub, setSelectedSub] = useState<Subscription | null>(null);
   const [newSubLotMultiplier, setNewSubLotMultiplier] = useState('1.0');
 
   const fetchUsers = useCallback(async () => {
@@ -237,47 +223,6 @@ export default function UserPage() {
       toast({ type: 'warning', title: 'Unsubscribed' });
     } catch {
       toast({ type: 'error', title: 'Failed to unsubscribe' });
-    }
-  };
-
-  const updateSubscription = async () => {
-    if (!editSubModal) return;
-    const multiplier = parseFloat(lotMultiplierInput);
-    if (!Number.isFinite(multiplier) || multiplier <= 0) {
-      toast({ type: 'error', title: 'Invalid lot multiplier' });
-      return;
-    }
-    setSavingSubscription(true);
-    try {
-      const res = await fetch(`${API}/subscriptions/${editSubModal.subscriptionId}`, {
-        method: 'PUT',
-        headers: adminHeaders(),
-        body: JSON.stringify({ lot_multiplier: multiplier }),
-      });
-      if (!res.ok) throw new Error();
-      if (selectedUser) selectUser(selectedUser.id);
-      toast({ type: 'success', title: 'Subscription updated' });
-      setEditSubModal(null);
-    } catch {
-      toast({ type: 'error', title: 'Failed to update subscription' });
-    } finally {
-      setSavingSubscription(false);
-    }
-  };
-
-  const toggleSubscriptionStatus = async (subId: number, currentStatus: string) => {
-    const newStatus = currentStatus === 'active' ? 'paused' : 'active';
-    try {
-      const res = await fetch(`${API}/subscriptions/${subId}`, {
-        method: 'PUT',
-        headers: adminHeaders(),
-        body: JSON.stringify({ status: newStatus }),
-      });
-      if (!res.ok) throw new Error();
-      if (selectedUser) selectUser(selectedUser.id);
-      toast({ type: 'success', title: `Subscription ${newStatus}` });
-    } catch {
-      toast({ type: 'error', title: 'Failed to update subscription' });
     }
   };
 
@@ -632,7 +577,11 @@ export default function UserPage() {
                       </div>
                       <div className="divide-y divide-gray-50 dark:divide-slate-800/50">
                         {(selectedUser.subscriptions || []).map((sub) => (
-                          <div key={sub.id} className="px-6 py-4 flex items-center justify-between">
+                          <button
+                            key={sub.id}
+                            onClick={() => setSelectedSub(sub)}
+                            className="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors text-left"
+                          >
                             <div className="flex items-center gap-3">
                               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center text-white font-bold text-xs">
                                 {sub.master_name.charAt(0).toUpperCase()}
@@ -641,46 +590,14 @@ export default function UserPage() {
                                 <p className="text-sm font-semibold">{sub.master_name}</p>
                                 <p className="text-[11px] text-gray-400 dark:text-slate-500">
                                   Lot: <span className="font-mono">{sub.lot_multiplier}x</span>
-                                  {' \u00b7 '}
+                                  {sub.total_trades > 0 && ` · ${sub.total_trades} trades`}
+                                  {' · '}
                                   <Badge variant={sub.status}>{sub.status}</Badge>
                                 </p>
                               </div>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => {
-                                  setEditSubModal({
-                                    subscriptionId: sub.id,
-                                    masterName: sub.master_name,
-                                    currentMultiplier: sub.lot_multiplier,
-                                    currentStatus: sub.status,
-                                  });
-                                  setLotMultiplierInput(sub.lot_multiplier.toString());
-                                }}
-                                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-1"
-                              >
-                                <Edit2 className="w-3 h-3" />
-                                Edit
-                              </button>
-                              <button
-                                onClick={() => toggleSubscriptionStatus(sub.id, sub.status)}
-                                className={cn(
-                                  'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
-                                  sub.status === 'active'
-                                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
-                                    : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20'
-                                )}
-                              >
-                                {sub.status === 'active' ? 'Pause' : 'Resume'}
-                              </button>
-                              <button
-                                onClick={() => unsubscribe(sub.master_id)}
-                                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-colors"
-                              >
-                                Unsubscribe
-                              </button>
-                            </div>
-                          </div>
+                            <Edit2 className="w-4 h-4 text-slate-400" />
+                          </button>
                         ))}
                       </div>
                     </Card>
@@ -818,74 +735,25 @@ export default function UserPage() {
         />
       )}
 
-      {/* Edit Subscription Modal */}
-      {editSubModal && (
-        <>
-          <div
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 animate-fade-in"
-            onClick={() => setEditSubModal(null)}
-          />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-slate-800 max-w-md w-full animate-scale-in">
-              <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-slate-800">
-                <div className="flex items-center gap-3">
-                  <Edit2 className="w-5 h-5 text-emerald-500" />
-                  <h3 className="text-lg font-bold">Edit Subscription</h3>
-                </div>
-                <button onClick={() => setEditSubModal(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="p-5 space-y-4">
-                <div>
-                  <p className="text-sm font-semibold mb-2">Master: {editSubModal.masterName}</p>
-                  <p className="text-xs text-gray-500 dark:text-slate-400">
-                    Current status: <Badge variant={editSubModal.currentStatus}>{editSubModal.currentStatus}</Badge>
-                  </p>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-2">
-                    Lot Multiplier
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    value={lotMultiplierInput}
-                    onChange={(e) => setLotMultiplierInput(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                  />
-                  <p className="text-xs text-gray-400 dark:text-slate-500 mt-1.5">
-                    Master lot &times; {lotMultiplierInput || '0'} = Your lot size
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex gap-3 p-5 border-t border-gray-100 dark:border-slate-800">
-                <button
-                  onClick={() => setEditSubModal(null)}
-                  disabled={savingSubscription}
-                  className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800 text-sm font-semibold transition-colors disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={updateSubscription}
-                  disabled={savingSubscription}
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold transition-colors disabled:opacity-50"
-                >
-                  {savingSubscription ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Saving...
-                    </span>
-                  ) : 'Save Changes'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
+      {/* Subscription Settings Panel */}
+      {selectedSub && (
+        <SubscriptionSettingsPanel
+          subscription={selectedSub}
+          onClose={() => setSelectedSub(null)}
+          onSaved={() => {
+            setSelectedSub(null);
+            if (selectedUser) selectUser(selectedUser.id);
+          }}
+          onUnsubscribed={() => {
+            setSelectedSub(null);
+            if (selectedUser) selectUser(selectedUser.id);
+          }}
+          saveUrl={(id) => `${API}/subscriptions/${id}`}
+          deleteUrl={(sub) => `${API}/users/${sub.user_id}/subscribe/${sub.master_id}`}
+          perfUrl={(id) => `${API}/subscriptions/${id}/performance`}
+          historyUrl={(id) => `${API}/subscriptions/${id}/history`}
+          extraHeaders={adminHeaders()}
+        />
       )}
     </div>
   );
