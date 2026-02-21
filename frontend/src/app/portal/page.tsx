@@ -10,7 +10,7 @@ import { Activity, TrendingUp, DollarSign, BarChart3 } from 'lucide-react';
 import { StatCard } from '@/components/ui/StatCard';
 import { LiveFeed } from '@/components/trade/LiveFeed';
 import { useTradeSocket } from '@/lib/useTradeSocket';
-import { SymbolDistChart } from '@/components/charts/SymbolDistChart';
+import { SymbolPieChart } from '@/components/charts/SymbolPieChart';
 import { MiniAreaChart } from '@/components/charts/MiniAreaChart';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { MasterCard, type LeaderboardMaster } from '@/components/MasterCard';
@@ -345,9 +345,9 @@ export default function PortalPage() {
               </div>
 
               {/* Symbol Exposure (40%) */}
-              <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
-                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-4">Your Symbol Exposure</h2>
-                <SymbolDistChart data={symbolData} maxItems={6} />
+              <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200 flex flex-col items-center justify-center">
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-4 w-full">Your Symbol Exposure</h2>
+                <SymbolPieChart data={symbolData} maxItems={6} />
               </div>
             </div>
 
