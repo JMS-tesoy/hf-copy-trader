@@ -492,7 +492,7 @@ export default function UserPage() {
                         <thead>
                           <tr className="text-[11px] font-medium uppercase tracking-wider text-gray-400 dark:text-slate-500 border-b border-gray-100 dark:border-slate-800">
                             <th className="px-6 py-3 text-left">Time</th>
-                            <th className="px-6 py-3 text-left">Master</th>
+                            <th className="px-6 py-3 text-left">Master ID#</th>
                             <th className="px-6 py-3 text-left">Symbol</th>
                             <th className="px-6 py-3 text-left">Side</th>
                             <th className="px-6 py-3 text-right">Price</th>
