@@ -330,6 +330,12 @@ export default function RegisterPage() {
               Sign in
             </Link>
           </p>
+          <p className="text-center text-slate-600 text-xs mt-3">
+            Want to compare plans first?{' '}
+            <Link href="/landing" className="text-slate-400 hover:text-slate-300 transition-colors">
+              View pricing & top masters
+            </Link>
+          </p>
         </div>
       </div>
     </div>

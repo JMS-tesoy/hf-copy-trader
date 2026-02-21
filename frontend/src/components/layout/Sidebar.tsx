@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 
 const navItems = [
-  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/master', label: 'Masters', icon: Crown },
   { href: '/user', label: 'Users', icon: Users },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
@@ -36,7 +36,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     >
       {/* Logo + Collapse Toggle */}
       <div className="h-14 flex items-center justify-between px-4 border-b border-gray-100 dark:border-slate-800 flex-shrink-0">
-        <Link href="/" className="flex items-center gap-3 overflow-hidden min-w-0">
+        <Link href="/admin" className="flex items-center gap-3 overflow-hidden min-w-0">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center flex-shrink-0">
             <span className="text-white text-sm font-black">HF</span>
           </div>

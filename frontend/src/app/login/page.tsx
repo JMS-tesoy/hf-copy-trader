@@ -21,7 +21,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const role = await login(email, password);
-      if (role === 'admin') router.push('/');
+      if (role === 'admin') router.push('/admin');
       else if (role === 'master') router.push('/master-portal');
       else router.push('/portal');
     } catch (err: any) {
@@ -152,6 +152,12 @@ export default function LoginPage() {
             Don&apos;t have an account?{' '}
             <Link href="/register" className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
               Create one
+            </Link>
+          </p>
+          <p className="text-center text-slate-600 text-xs mt-3">
+            New here?{' '}
+            <Link href="/landing" className="text-slate-400 hover:text-slate-300 transition-colors">
+              Explore plans & top masters
             </Link>
           </p>
         </div>

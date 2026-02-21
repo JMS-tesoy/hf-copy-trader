@@ -12,7 +12,7 @@ function getJwtPayload(token: string): { role?: string } | null {
   }
 }
 
-const ADMIN_ROUTES = ['/', '/master', '/user', '/analytics'];
+const ADMIN_ROUTES = ['/admin', '/master', '/user', '/analytics'];
 const USER_ROUTES = ['/portal'];
 const MASTER_ROUTES = ['/master-portal'];
 const PUBLIC_ROUTES = ['/login', '/register', '/master-register'];
@@ -46,7 +46,7 @@ export function proxy(req: NextRequest) {
 
   // If already authenticated, skip public pages
   if (PUBLIC_ROUTES.includes(pathname)) {
-    if (role === 'admin') return NextResponse.redirect(new URL('/', req.url));
+    if (role === 'admin') return NextResponse.redirect(new URL('/admin', req.url));
     if (role === 'user') return NextResponse.redirect(new URL('/portal', req.url));
     if (role === 'master') return NextResponse.redirect(new URL('/master-portal', req.url));
   }
@@ -55,7 +55,7 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/', '/master', '/master/:path*', '/user', '/user/:path*',
+  matcher: ['/', '/admin', '/admin/:path*', '/master', '/master/:path*', '/user', '/user/:path*',
             '/analytics', '/analytics/:path*', '/portal', '/portal/:path*',
             '/master-portal', '/master-portal/:path*',
             '/login', '/register', '/master-register'],

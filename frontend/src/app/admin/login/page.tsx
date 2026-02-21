@@ -22,7 +22,7 @@ export default function AdminLoginPage() {
       if (role !== 'admin') {
         throw new Error('Not authorized as admin');
       }
-      router.push('/');
+      router.push('/admin');
     } catch (err: any) {
       setError(err.message);
     } finally {

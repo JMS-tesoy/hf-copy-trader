@@ -9,7 +9,7 @@ import type { ConnectionStatus } from '@/lib/useTradeSocket';
 import { useAuth } from '@/lib/AuthContext';
 
 const pageTitles: Record<string, string> = {
-  '/': 'Dashboard',
+  '/admin': 'Dashboard',
   '/master': 'Master Traders',
   '/user': 'Users',
   '/analytics': 'Analytics',
