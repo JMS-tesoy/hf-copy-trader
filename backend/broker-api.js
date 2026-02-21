@@ -965,6 +965,19 @@ app.get('/api/master-me/trades', requireMasterJWT, async (req, res) => {
   }
 });
 
+// GET /api/master-me/subscribers — Get list of subscribers for this master
+app.get('/api/master-me/subscribers', requireMasterJWT, async (req, res) => {
+  try {
+    const result = await pg.query(
+      'SELECT DISTINCT u.id, u.name FROM subscriptions s JOIN users u ON s.user_id = u.id WHERE s.master_id = $1 AND s.status = $2 ORDER BY u.name',
+      [req.masterId, 'active']
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PUT /api/master-me/profile — Update master's name, email, password, or bio
 app.put('/api/master-me/profile', requireMasterJWT, async (req, res) => {
   const { name, email, password, bio } = req.body;
