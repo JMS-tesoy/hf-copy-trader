@@ -267,8 +267,13 @@ export default function MasterPortalPage() {
             {stats ? (
               <>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                  {/* Subscribers card with stacked avatars */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <div className="flex items-center gap-2 mb-3"><Users className="w-5 h-5 text-emerald-400" /><span className="text-slate-400 text-xs">Subscribers</span></div>
+                    <SubscriberStack subscribers={subscribers} />
+                  </div>
+
                   {[
-                    { icon: <Users className="w-5 h-5 text-emerald-400" />, label: 'Subscribers', value: stats.subscriber_count },
                     { icon: <Zap className="w-5 h-5 text-cyan-400" />, label: 'Signals Sent', value: stats.signal_count },
                     {
                       icon: <TrendingUp className="w-5 h-5 text-blue-400" />,
@@ -304,11 +309,6 @@ export default function MasterPortalPage() {
                     <div><dt className="text-slate-500">Master ID</dt><dd className="text-white mt-0.5">#{stats.id}</dd></div>
                     <div><dt className="text-slate-500">Joined</dt><dd className="text-white mt-0.5">{fmt(stats.created_at)}</dd></div>
                   </dl>
-                </div>
-
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                  <h3 className="text-sm font-medium text-slate-300 mb-4">Subscribers</h3>
-                  <SubscriberStack subscribers={subscribers} />
                 </div>
               </>
             ) : (

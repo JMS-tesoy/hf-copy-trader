@@ -9,6 +9,7 @@ interface Subscriber {
 
 interface SubscriberStackProps {
   subscribers: Subscriber[];
+  showLabel?: boolean;
 }
 
 const colorPalette = [
@@ -28,19 +29,19 @@ function getSubscriberColor(id: number): string {
   return colorPalette[id % colorPalette.length];
 }
 
-export function SubscriberStack({ subscribers }: SubscriberStackProps) {
+export function SubscriberStack({ subscribers, showLabel = false }: SubscriberStackProps) {
   const displayedSubscribers = useMemo(() => {
     return subscribers.slice(0, 3);
   }, [subscribers]);
 
   if (subscribers.length === 0) {
     return (
-      <span className="text-xs text-slate-500">No subscribers yet</span>
+      <div className="text-2xl font-bold text-white">0</div>
     );
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-3">
       <div className="flex -space-x-2">
         {displayedSubscribers.map((sub) => (
           <div
@@ -57,9 +58,11 @@ export function SubscriberStack({ subscribers }: SubscriberStackProps) {
           </div>
         )}
       </div>
-      <span className="text-xs text-slate-400">
-        {subscribers.length} {subscribers.length === 1 ? 'subscriber' : 'subscribers'}
-      </span>
+      {showLabel && (
+        <span className="text-xs text-slate-400">
+          {subscribers.length} {subscribers.length === 1 ? 'subscriber' : 'subscribers'}
+        </span>
+      )}
     </div>
   );
 }
