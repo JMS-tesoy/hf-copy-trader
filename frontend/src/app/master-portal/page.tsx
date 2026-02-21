@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
 import { API } from '@/lib/api';
@@ -229,13 +230,29 @@ export default function MasterPortalPage() {
               )}
             </div>
           </div>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-1.5 text-slate-400 hover:text-red-400 text-sm transition-colors"
-          >
-            <PowerIcon />
-            <span className="hidden sm:inline">Sign out</span>
-          </button>
+          <div className="flex items-center gap-4">
+            <Link
+              href="/faq"
+              className="text-sm text-slate-400 hover:text-emerald-400 transition-colors"
+              title="Open FAQ"
+            >
+              FAQ
+            </Link>
+            <Link
+              href="/portal"
+              className="text-sm text-slate-400 hover:text-emerald-400 transition-colors"
+              title="Open Copy Trader Portal"
+            >
+              Trader Portal
+            </Link>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 text-slate-400 hover:text-red-400 text-sm transition-colors"
+            >
+              <PowerIcon />
+              <span className="hidden sm:inline">Sign out</span>
+            </button>
+          </div>
         </div>
       </header>
 

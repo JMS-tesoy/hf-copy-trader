@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
 import { API } from '@/lib/api';
@@ -255,6 +256,13 @@ export default function PortalPage() {
           <p className="text-xs text-slate-400">{user?.email}</p>
         </div>
         <div className="flex items-center gap-4">
+          <Link
+            href="/faq"
+            className="text-sm text-slate-400 hover:text-emerald-400 transition-colors"
+            title="Open FAQ"
+          >
+            FAQ
+          </Link>
           <span className="text-sm text-slate-400">
             Balance: <span className="text-white font-medium">${user?.balance?.toLocaleString()}</span>
           </span>
