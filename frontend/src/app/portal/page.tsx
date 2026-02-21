@@ -6,7 +6,7 @@ import { useAuth } from '@/lib/AuthContext';
 import { API } from '@/lib/api';
 import { PowerIcon } from '@/components/ui/PowerIcon';
 import { SubscriptionSettingsPanel, type SubscriptionFull } from '@/components/SubscriptionSettingsPanel';
-import { Activity, TrendingUp, DollarSign, BarChart3, ChevronDown } from 'lucide-react';
+import { Activity, TrendingUp, DollarSign, BarChart3 } from 'lucide-react';
 import { StatCard } from '@/components/ui/StatCard';
 import { LiveFeed } from '@/components/trade/LiveFeed';
 import { useTradeSocket } from '@/lib/useTradeSocket';
@@ -14,7 +14,6 @@ import { SymbolDistChart } from '@/components/charts/SymbolDistChart';
 import { MiniAreaChart } from '@/components/charts/MiniAreaChart';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { MasterCard, type LeaderboardMaster } from '@/components/MasterCard';
-import { MasterIdStack } from '@/components/MasterIdStack';
 
 type Subscription = SubscriptionFull;
 
@@ -44,16 +43,6 @@ interface LiveTrade {
 const tabs = ['Overview', 'My Trades', 'Subscriptions', 'Settings'] as const;
 type Tab = typeof tabs[number];
 
-interface GroupedTrade {
-  symbol: string;
-  masterIds: number[];
-  trades: Trade[];
-  firstAction: string;
-  avgPrice: number;
-  totalLots: number;
-  status: string;
-}
-
 function apiMe(path = '', opts: RequestInit = {}) {
   return fetch(`${API}${path}`, { credentials: 'include', ...opts });
 }
@@ -73,10 +62,6 @@ export default function PortalPage() {
   // Filter state
   const [symbolFilter, setSymbolFilter] = useState('');
   const [masterFilter, setMasterFilter] = useState('');
-  
-  // Expanded rows state
-  const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(new Set());
-  const [selectedMasterDetail, setSelectedMasterDetail] = useState<{ symbol: string; masterId: number } | null>(null);
 
   // Subscriptions state
   const [subs, setSubs] = useState<Subscription[]>([]);
@@ -223,32 +208,11 @@ export default function PortalPage() {
     });
   }, [trades]);
 
-  // Client-side filter for My Trades display with grouping by symbol
+  // Client-side filter for My Trades display
   const displayedTrades = useMemo(() => {
-    const filtered = trades
+    return trades
       .filter(t => !symbolFilter || t.symbol.toLowerCase().includes(symbolFilter.toLowerCase()))
       .filter(t => !masterFilter || t.master_id === Number(masterFilter));
-    
-    const grouped: Record<string, Trade[]> = {};
-    filtered.forEach(t => {
-      if (!grouped[t.symbol]) grouped[t.symbol] = [];
-      grouped[t.symbol].push(t);
-    });
-    
-    return Object.entries(grouped).map(([symbol, symbolTrades]) => {
-      const masterIds = [...new Set(symbolTrades.map(t => t.master_id))];
-      const avgPrice = symbolTrades.reduce((sum, t) => sum + t.price, 0) / symbolTrades.length;
-      const totalLots = symbolTrades.reduce((sum, t) => sum + t.lot_size, 0);
-      return {
-        symbol,
-        masterIds,
-        trades: symbolTrades,
-        firstAction: symbolTrades[0].action,
-        avgPrice,
-        totalLots,
-        status: symbolTrades[0].status,
-      } as GroupedTrade;
-    });
   }, [trades, symbolFilter, masterFilter]);
 
   const actionColor: Record<string, string> = {
@@ -455,80 +419,27 @@ export default function PortalPage() {
                 <tbody>
                   {displayedTrades.length === 0 ? (
                     <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-500">No trades found</td></tr>
-                  ) : displayedTrades.map((group) => {
-                    const isExpanded = expandedSymbols.has(group.symbol);
-                    return (
-                      <tbody key={group.symbol}>
-                        <tr className="border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer">
-                          <td className="px-4 py-3 font-medium text-white">
-                            <button
-                              onClick={() => {
-                                const newExpanded = new Set(expandedSymbols);
-                                if (isExpanded) newExpanded.delete(group.symbol);
-                                else newExpanded.add(group.symbol);
-                                setExpandedSymbols(newExpanded);
-                              }}
-                              className="flex items-center gap-2 hover:text-blue-400"
-                            >
-                              <ChevronDown className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                              {group.symbol}
-                            </button>
-                          </td>
-                          <td className="px-4 py-3">
-                            <MasterIdStack
-                              masterIds={group.masterIds}
-                              onClick={(masterId) => {
-                                setSelectedMasterDetail({ symbol: group.symbol, masterId });
-                              }}
-                            />
-                          </td>
-                          <td className={`px-4 py-3 font-medium ${actionColor[group.firstAction] || ''}`}>{group.firstAction}</td>
-                          <td className="px-4 py-3 text-right text-slate-300">{group.avgPrice > 100 ? group.avgPrice.toFixed(2) : group.avgPrice.toFixed(5)}</td>
-                          <td className="px-4 py-3 text-right text-slate-300">{group.totalLots.toFixed(2)}</td>
-                          <td className="px-4 py-3 text-right text-slate-400">—</td>
-                          <td className="px-4 py-3 text-right text-slate-400">—</td>
-                          <td className="px-4 py-3 text-center">
-                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                              group.status === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-slate-700 text-slate-400'
-                            }`}>{group.status}</span>
-                          </td>
-                          <td className="px-4 py-3 text-right text-slate-500 text-xs">
-                            {new Date(group.trades[0].copied_at).toLocaleString()}
-                          </td>
-                        </tr>
-                        {isExpanded && (
-                          group.trades.map((trade) => (
-                            <tr
-                              key={trade.id}
-                              className={`border-b border-slate-800/30 hover:bg-slate-800/20 bg-slate-900/50 ${
-                                selectedMasterDetail?.masterId === trade.master_id && selectedMasterDetail?.symbol === group.symbol
-                                  ? 'bg-blue-500/10'
-                                  : ''
-                              }`}
-                            >
-                              <td className="px-4 py-3 text-slate-400 text-xs pl-12"></td>
-                              <td className="px-4 py-3">
-                                <span className="px-2 py-0.5 rounded-md bg-slate-800 text-xs font-mono">#{trade.master_id}</span>
-                              </td>
-                              <td className={`px-4 py-3 font-medium ${actionColor[trade.action] || ''}`}>{trade.action}</td>
-                              <td className="px-4 py-3 text-right text-slate-300">{trade.price > 100 ? trade.price.toFixed(2) : trade.price.toFixed(5)}</td>
-                              <td className="px-4 py-3 text-right text-slate-300">{trade.lot_size}</td>
-                              <td className="px-4 py-3 text-right text-slate-400">{trade.sl || '—'}</td>
-                              <td className="px-4 py-3 text-right text-slate-400">{trade.tp || '—'}</td>
-                              <td className="px-4 py-3 text-center">
-                                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                                  trade.status === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-slate-700 text-slate-400'
-                                }`}>{trade.status}</span>
-                              </td>
-                              <td className="px-4 py-3 text-right text-slate-500 text-xs">
-                                {new Date(trade.copied_at).toLocaleString()}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    );
-                  })}
+                  ) : displayedTrades.map(t => (
+                    <tr key={t.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                      <td className="px-4 py-3 font-medium text-white">{t.symbol}</td>
+                      <td className="px-4 py-3">
+                        <span className="px-2 py-0.5 rounded-md bg-slate-800 text-xs font-mono">#{t.master_id}</span>
+                      </td>
+                      <td className={`px-4 py-3 font-medium ${actionColor[t.action] || ''}`}>{t.action}</td>
+                      <td className="px-4 py-3 text-right text-slate-300">{t.price > 100 ? t.price.toFixed(2) : t.price.toFixed(5)}</td>
+                      <td className="px-4 py-3 text-right text-slate-300">{t.lot_size}</td>
+                      <td className="px-4 py-3 text-right text-slate-400">{t.sl || '—'}</td>
+                      <td className="px-4 py-3 text-right text-slate-400">{t.tp || '—'}</td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          t.status === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-slate-700 text-slate-400'
+                        }`}>{t.status}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right text-slate-500 text-xs">
+                        {new Date(t.copied_at).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

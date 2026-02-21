@@ -10,6 +10,7 @@ import {
   ChevronLeft, ChevronRight, Eye, EyeOff,
 } from 'lucide-react';
 import { PowerIcon } from '@/components/ui/PowerIcon';
+import { SubscriberStack } from '@/components/SubscriberStack';
 
 const LIMIT = 20;
 
@@ -36,6 +37,11 @@ interface Trade {
   received_at: string;
 }
 
+interface Subscriber {
+  id: number;
+  name: string;
+}
+
 function fmt(ts: string | null) {
   if (!ts) return '—';
   return new Date(ts).toLocaleString();
@@ -57,6 +63,9 @@ export default function MasterPortalPage() {
   // Stats
   const [stats, setStats] = useState<MasterStats | null>(null);
   const [statsError, setStatsError] = useState('');
+  
+  // Subscribers
+  const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
 
   // Trades
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -94,6 +103,17 @@ export default function MasterPortalPage() {
     }
   }, []);
 
+  const loadSubscribers = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/master-me/subscribers`, { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      setSubscribers(Array.isArray(data) ? data : data.subscribers || []);
+    } catch {
+      // silently ignore
+    }
+  }, []);
+
   const loadTrades = useCallback(async (off = 0) => {
     setTradesLoading(true);
     try {
@@ -114,7 +134,8 @@ export default function MasterPortalPage() {
     if (role === null) return; // still loading
     if (role !== 'master') { router.replace('/login'); return; }
     loadStats();
-  }, [role, router, loadStats]);
+    loadSubscribers();
+  }, [role, router, loadStats, loadSubscribers]);
 
   useEffect(() => {
     if (tab === 'Trade History') loadTrades(0);
@@ -283,6 +304,11 @@ export default function MasterPortalPage() {
                     <div><dt className="text-slate-500">Master ID</dt><dd className="text-white mt-0.5">#{stats.id}</dd></div>
                     <div><dt className="text-slate-500">Joined</dt><dd className="text-white mt-0.5">{fmt(stats.created_at)}</dd></div>
                   </dl>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                  <h3 className="text-sm font-medium text-slate-300 mb-4">Subscribers</h3>
+                  <SubscriberStack subscribers={subscribers} />
                 </div>
               </>
             ) : (
