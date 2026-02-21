@@ -55,7 +55,7 @@ export function SubscriberStack({ subscribers, showLabel = false, onSubscriberCl
           </button>
         ))}
         {subscribers.length > 3 && (
-          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-semibold bg-slate-700 hover:bg-slate-600 transition-colors hover:ring-2 hover:ring-white hover:ring-offset-1 hover:ring-offset-slate-900 cursor-default">
+          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-500 transition-colors hover:ring-2 hover:ring-white hover:ring-offset-1 hover:ring-offset-slate-900 cursor-default">
             +{subscribers.length - 3}
           </div>
         )}
