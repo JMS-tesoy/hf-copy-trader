@@ -271,7 +271,7 @@ export default function MasterPortalPage() {
               <>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
                   {/* Subscribers card with stacked avatars */}
-                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 hover:scale-105 transition-all duration-200 cursor-pointer">
                     <div className="flex items-center gap-2 mb-3"><Users className="w-5 h-5 text-emerald-400" /><span className="text-slate-400 text-xs">Subscribers</span></div>
                     <SubscriberStack
                       subscribers={subscribers}
@@ -303,14 +303,14 @@ export default function MasterPortalPage() {
                       value: null,
                     },
                   ].map(({ icon, label, value }) => (
-                    <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 hover:scale-105 transition-all duration-200">
                       <div className="flex items-center gap-2 mb-2">{icon}<span className="text-slate-400 text-xs">{label}</span></div>
                       {value !== null && <div className="text-2xl font-bold text-white">{value}</div>}
                     </div>
                   ))}
                 </div>
 
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
                   <h3 className="text-sm font-medium text-slate-300 mb-3">Account Info</h3>
                   <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div><dt className="text-slate-500">Name</dt><dd className="text-white mt-0.5">{stats.name}</dd></div>
