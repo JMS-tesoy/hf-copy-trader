@@ -406,6 +406,7 @@ export default function PortalPage() {
                 <thead>
                   <tr className="border-b border-slate-800 text-slate-400 text-xs">
                     <th className="px-4 py-3 text-left">Symbol</th>
+                    <th className="px-4 py-3 text-left">Master ID#</th>
                     <th className="px-4 py-3 text-left">Action</th>
                     <th className="px-4 py-3 text-right">Price</th>
                     <th className="px-4 py-3 text-right">Lots</th>
@@ -417,10 +418,13 @@ export default function PortalPage() {
                 </thead>
                 <tbody>
                   {displayedTrades.length === 0 ? (
-                    <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">No trades found</td></tr>
+                    <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-500">No trades found</td></tr>
                   ) : displayedTrades.map(t => (
                     <tr key={t.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                       <td className="px-4 py-3 font-medium text-white">{t.symbol}</td>
+                      <td className="px-4 py-3">
+                        <span className="px-2 py-0.5 rounded-md bg-slate-800 text-xs font-mono">#{t.master_id}</span>
+                      </td>
                       <td className={`px-4 py-3 font-medium ${actionColor[t.action] || ''}`}>{t.action}</td>
                       <td className="px-4 py-3 text-right text-slate-300">{t.price > 100 ? t.price.toFixed(2) : t.price.toFixed(5)}</td>
                       <td className="px-4 py-3 text-right text-slate-300">{t.lot_size}</td>
