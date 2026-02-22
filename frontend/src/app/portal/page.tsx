@@ -44,6 +44,25 @@ interface LiveTrade {
 const tabs = ['Overview', 'My Trades', 'Subscriptions', 'Settings'] as const;
 type Tab = typeof tabs[number];
 
+function initials(name: string): string {
+  const parts = (name || '').trim().split(/\s+/).slice(0, 2);
+  if (!parts.length) return 'M';
+  return parts.map((p) => p.charAt(0).toUpperCase()).join('');
+}
+
+function handleSubCardMouseMove(e: React.MouseEvent<HTMLButtonElement>) {
+  const el = e.currentTarget;
+  const rect = el.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width - 0.5;
+  const y = (e.clientY - rect.top) / rect.height - 0.5;
+  el.style.transform = `perspective(900px) rotateY(${x * 12}deg) rotateX(${-y * 8}deg) translateY(-4px)`;
+}
+
+function handleSubCardMouseLeave(e: React.MouseEvent<HTMLButtonElement>) {
+  e.currentTarget.style.transform = 'perspective(900px) rotateY(0deg) rotateX(0deg) translateY(0)';
+}
+
+
 function apiMe(path = '', opts: RequestInit = {}) {
   return fetch(`${API}${path}`, { credentials: 'include', ...opts });
 }
@@ -486,28 +505,39 @@ export default function PortalPage() {
               {subs.length === 0 ? (
                 <p className="text-slate-500 text-sm">No subscriptions yet.</p>
               ) : (
-                <div className="space-y-2">
+                <div className="flex flex-wrap justify-center gap-3">
                   {subs.map(s => (
                     <button
                       key={s.id}
                       onClick={() => setSelectedSub(s)}
-                      className="w-full bg-slate-900 border border-slate-800 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 rounded-xl px-4 py-3 flex items-center gap-4 text-left transition-all duration-200"
+                      onMouseMove={handleSubCardMouseMove}
+                      onMouseLeave={handleSubCardMouseLeave}
+                      className="group w-[248px] rounded-2xl border border-white/10 bg-gradient-to-b from-white/10 to-transparent px-4 py-3 text-left shadow-xl shadow-black/40 backdrop-blur-md transition-[transform,border-color,box-shadow] duration-200 will-change-transform hover:border-emerald-500/40 hover:shadow-emerald-500/20"
                     >
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium text-white truncate">{s.master_name}</div>
-                        <div className="text-xs text-slate-500">
-                          Lot ×{s.lot_multiplier}
-                          {s.total_trades > 0 && ` · ${s.total_trades} trades`}
-                          {s.win_rate != null && ` · ${s.win_rate.toFixed(0)}% win`}
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400/30 to-cyan-400/20 text-xs font-bold text-emerald-200 ring-1 ring-emerald-500/25">
+                            {initials(s.master_name)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate font-semibold text-white">{s.master_name}</div>
+                            <div className="text-xs text-slate-400">
+                              Lot x{s.lot_multiplier}
+                              {s.total_trades > 0 && ` | ${s.total_trades} trades`}
+                              {s.win_rate != null && ` | ${s.win_rate.toFixed(0)}% win`}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                            s.status === 'active' ? 'bg-green-500/20 text-green-400' :
+                            s.status === 'paused' ? 'bg-yellow-500/20 text-yellow-400' :
+                            s.status === 'suspended' ? 'bg-red-500/20 text-red-400' :
+                            'bg-slate-700 text-slate-400'
+                          }`}>{s.status}</span>
+                          <span className="text-slate-500 text-sm transition-colors group-hover:text-emerald-300">{">"}</span>
                         </div>
                       </div>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium shrink-0 ${
-                        s.status === 'active' ? 'bg-green-500/20 text-green-400' :
-                        s.status === 'paused' ? 'bg-yellow-500/20 text-yellow-400' :
-                        s.status === 'suspended' ? 'bg-red-500/20 text-red-400' :
-                        'bg-slate-700 text-slate-400'
-                      }`}>{s.status}</span>
-                      <span className="text-slate-600 text-sm shrink-0">›</span>
                     </button>
                   ))}
                 </div>

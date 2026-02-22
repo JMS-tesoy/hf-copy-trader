@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { API } from '@/lib/api';
-import { Crown, Users, BarChart3, Zap, CheckCircle2, ArrowRight, Sparkles, Activity, Clock3, Shield, TrendingUp, Globe, Lock, ChevronDown, Server } from 'lucide-react';
+import { Crown, Users, BarChart3, Zap, CheckCircle2, ArrowRight, Sparkles, Shield, TrendingUp, Globe, Lock, ChevronDown, Server } from 'lucide-react';
 
 interface SubscriptionTier {
   id: number;
@@ -50,12 +50,6 @@ function formatTierName(name: string): string {
 
 function formatCount(value: string | number): string {
   return new Intl.NumberFormat().format(toNumber(value));
-}
-
-function formatLastSignal(value: string | null): string {
-  if (!value) return 'No signal yet';
-  const dt = new Date(value);
-  return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function formatMasterAge(createdAt: string): string {
@@ -387,7 +381,7 @@ export default function LandingPage() {
 
   const [openFaqModal, setOpenFaqModal] = useState<number | null>(null);
   const faqItems = [
-    { q: 'Do I need programming skills?', a: 'No. Install the MT5 Expert Advisor on your broker terminal and everything else — subscriptions, copying, risk controls — is managed from your web portal.' },
+    { q: 'Do I need programming skills?', a: 'No. Install the MT5 Expert Advisor on your broker terminal and everything else - subscriptions, copying, risk controls - is managed from your web portal.' },
     { q: 'Which brokers are supported?', a: 'Any MetaTrader 5 (MT5) broker worldwide. The EA automatically detects broker-specific symbol suffixes (e.g. EURUSD.m, EURUSDpro) so no manual configuration is needed.' },
     { q: 'How quickly are trades copied?', a: 'Signal delivery uses Protocol Buffer binary encoding over WebSocket, typically reaching your terminal in under 100ms after the master opens a position.' },
     { q: 'Can I control my risk?', a: 'Yes. Each subscription supports: symbol whitelists/blacklists, max position size, max concurrent positions, max positions per day, and a daily loss limit with automatic suspension.' },
@@ -578,9 +572,9 @@ export default function LandingPage() {
           </div>
           <div className="grid gap-6 md:grid-cols-3">
             {[
-              { step: '01', title: 'Create your account', desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal â€” no coding required.', dot: 'bg-emerald-400', glow: 'shadow-emerald-950' },
-              { step: '02', title: 'Follow a master trader', desc: 'Browse the leaderboard, review real verified performance, and subscribe to a tier that fits your risk appetite.', dot: 'bg-cyan-400', glow: 'shadow-cyan-950' },
-              { step: '03', title: 'Trades copy automatically', desc: 'Every signal is mirrored to your broker in real-time â€” zero manual input, full transparency.', dot: 'bg-purple-400', glow: 'shadow-purple-950' },
+              { step: '01', title: 'Create your account', desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal - no coding required.', dot: 'bg-emerald-400' },
+              { step: '02', title: 'Follow a master trader', desc: 'Browse the leaderboard, review real verified performance, and subscribe to a tier that fits your risk appetite.', dot: 'bg-cyan-400' },
+              { step: '03', title: 'Trades copy automatically', desc: 'Every signal is mirrored to your broker in real-time - zero manual input, full transparency.', dot: 'bg-purple-400' },
             ].map(({ step, title, desc, dot }) => (
               <div
                 key={step}
@@ -605,7 +599,7 @@ export default function LandingPage() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[
               { icon: Zap, title: 'Sub-millisecond signals', desc: 'Protocol Buffer binary encoding over WebSocket delivers trades faster than any REST-based alternative.', iconColor: 'text-yellow-300', iconBg: 'bg-yellow-400/10' },
-              { icon: TrendingUp, title: 'Verified performance', desc: "Every master's track record is built from real closed trades â€” not backtests or hypotheticals.", iconColor: 'text-emerald-300', iconBg: 'bg-emerald-400/10' },
+              { icon: TrendingUp, title: 'Verified performance', desc: "Every master's track record is built from real closed trades - not backtests or hypotheticals.", iconColor: 'text-emerald-300', iconBg: 'bg-emerald-400/10' },
               { icon: Shield, title: 'Risk controls', desc: 'Set symbol whitelists, max position sizes, daily loss limits, and concurrent position caps per subscription.', iconColor: 'text-cyan-300', iconBg: 'bg-cyan-400/10' },
               { icon: Globe, title: 'Multi-broker support', desc: 'Works with any MT5 broker worldwide. Automatic symbol suffix detection handles broker-specific naming.', iconColor: 'text-blue-300', iconBg: 'bg-blue-400/10' },
               { icon: Server, title: 'Built to scale', desc: 'PM2 cluster mode, Redis pub/sub, and Nginx sharding handle thousands of simultaneous connections.', iconColor: 'text-purple-300', iconBg: 'bg-purple-400/10' },
@@ -901,7 +895,7 @@ export default function LandingPage() {
         </div>
       )}
 
-      {/* CTA BANNER â€” full width */}
+      {/* CTA BANNER - full width */}
       <div className="relative z-10 bg-gradient-to-r from-emerald-900/40 via-slate-900 to-cyan-900/40 px-4 py-16 text-center">
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute left-1/4 top-0 h-48 w-48 rounded-full bg-emerald-500/10 blur-3xl" />
