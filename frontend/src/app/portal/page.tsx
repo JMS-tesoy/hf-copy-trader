@@ -130,7 +130,7 @@ export default function PortalPage() {
 
   const handleLogout = async () => {
     await logout();
-    router.push('/login');
+    router.push('/landing');
   };
 
   const handleSubscribe = async (masterId: number, lotMultiplier: number) => {
@@ -171,7 +171,7 @@ export default function PortalPage() {
       const res = await apiMe('/me', { method: 'DELETE' });
       if (res.ok) {
         await logout();
-        router.push('/login');
+        router.push('/landing');
       }
     } finally {
       setDeletingAccount(false);

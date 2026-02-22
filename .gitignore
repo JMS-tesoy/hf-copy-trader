@@ -1,6 +1,8 @@
 node_modules/
+scripts/backups/*.sql
 .env
 .env.local
+backend/docker-secrets.env
 .claude/
 *.log
 .next/

@@ -18,24 +18,20 @@ services:
       - "8081"
       - "8082"
       - "8083"
+    env_file:
+      - ./backend/docker-secrets.env   # non-root file — NOT yaml-interpolated, $ passed literally
     environment:
+      # Docker-specific overrides (take priority over env_file values)
       - NODE_ENV=production
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - PG_HOST=postgres
       - PG_PORT=5432
-      - PG_DATABASE=${PG_DATABASE:-copy_trading}
-      - PG_USER=${PG_USER:-postgres}
-      - PG_PASSWORD=${PG_PASSWORD:-postgres}
-      - JWT_SECRET=${JWT_SECRET}
-      - API_KEY=${API_KEY}
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - FRONTEND_URL=${FRONTEND_URL}
-      - RESEND_API_KEY=${RESEND_API_KEY}
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   redis:
     image: redis:alpine
@@ -54,6 +50,12 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-postgres} -d ${PG_DATABASE:-copy_trading}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
 volumes:
   pgdata:

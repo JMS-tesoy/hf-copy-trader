@@ -136,7 +136,7 @@ export default function MasterPortalPage() {
 
   useEffect(() => {
     if (role === null) return; // still loading
-    if (role !== 'master') { router.replace('/login'); return; }
+    if (role !== 'master') { router.replace('/landing'); return; }
     loadStats();
     loadSubscribers();
   }, [role, router, loadStats, loadSubscribers]);
@@ -147,7 +147,7 @@ export default function MasterPortalPage() {
 
   const handleLogout = async () => {
     await logout();
-    router.push('/login');
+    router.push('/landing');
   };
 
   const copyKey = () => {

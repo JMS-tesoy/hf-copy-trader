@@ -35,7 +35,7 @@ export default function Home() {
   // Redirect unauthenticated users to login
   useEffect(() => {
     if (!loading && !role) {
-      router.push('/login');
+      router.push('/landing');
     }
   }, [role, loading, router]);
   const [history, setHistory] = useState<Trade[]>([]);

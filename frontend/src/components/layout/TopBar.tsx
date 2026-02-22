@@ -31,7 +31,7 @@ export function TopBar({ onMenuClick, status, notificationCount = 0, onBellClick
 
   const handleLogout = async () => {
     await logout();
-    router.push('/login');
+    router.push('/landing');
   };
 
   return (

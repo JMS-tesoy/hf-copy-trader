@@ -22,25 +22,26 @@ export function proxy(req: NextRequest) {
   const token = req.cookies.get('auth_token')?.value;
   const payload = token ? getJwtPayload(token) : null;
   const role = payload?.role;
+  const roleHome = role === 'admin' ? '/admin' : role === 'user' ? '/portal' : role === 'master' ? '/master-portal' : '/landing';
 
   // Admin routes — must be admin, else send to unified login
   if (ADMIN_ROUTES.some(r => pathname === r || pathname.startsWith(r + '/'))) {
     if (role !== 'admin') {
-      return NextResponse.redirect(new URL('/login', req.url));
+      return NextResponse.redirect(new URL(roleHome, req.url));
     }
   }
 
   // User portal — must be user, else send to unified login
   if (USER_ROUTES.some(r => pathname === r || pathname.startsWith(r + '/'))) {
     if (role !== 'user') {
-      return NextResponse.redirect(new URL('/login', req.url));
+      return NextResponse.redirect(new URL(roleHome, req.url));
     }
   }
 
   // Master portal — must be master, else send to unified login
   if (MASTER_ROUTES.some(r => pathname === r || pathname.startsWith(r + '/'))) {
     if (role !== 'master') {
-      return NextResponse.redirect(new URL('/login', req.url));
+      return NextResponse.redirect(new URL(roleHome, req.url));
     }
   }
 

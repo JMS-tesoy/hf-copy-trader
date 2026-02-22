@@ -17,12 +17,17 @@ const VALID_ACTIONS = ['BUY', 'SELL', 'CLOSE_BUY', 'CLOSE_SELL', 'MODIFY'];
 const TOTAL_SHARDS = parseInt(process.env.TOTAL_SHARDS) || 3;
 const JWT_SECRET = process.env.JWT_SECRET || 'changeme-jwt-secret';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD || '';
+const ADMIN_PASSWORD_RAW  = process.env.ADMIN_PASSWORD || '';
+// Support both bcrypt hash (legacy) and plain text. Bcrypt hashes always start with $2.
+// Plain text avoids Docker Compose $ interpolation bugs that corrupt bcrypt hashes.
+const ADMIN_PASSWORD_HASH = ADMIN_PASSWORD_RAW.startsWith('$2') ? ADMIN_PASSWORD_RAW : null;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const COOKIE_OPTS = { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 };
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+const PERF_SERIES_CACHE_TTL_MS = parseInt(process.env.PERF_SERIES_CACHE_TTL_MS, 10) || 60000;
+const performanceSeriesCache = new Map();
 
 const app = express();
 app.use(cors({ credentials: true, origin: FRONTEND_URL }));
@@ -361,8 +366,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
   try {
     // 1. Check admin credentials (uses username, not email)
-    if (ADMIN_PASSWORD_HASH && email.trim() === ADMIN_USERNAME) {
-      const valid = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
+    if (ADMIN_PASSWORD_RAW && email.trim() === ADMIN_USERNAME) {
+      const valid = ADMIN_PASSWORD_HASH
+        ? await bcrypt.compare(password, ADMIN_PASSWORD_HASH)  // bcrypt hash
+        : password === ADMIN_PASSWORD_RAW;                     // plain text
       if (valid) {
         const token = jwt.sign({ sub: 'admin', role: 'admin' }, JWT_SECRET, { expiresIn: '7d' });
         res.cookie('auth_token', token, COOKIE_OPTS);
@@ -831,6 +838,86 @@ app.get('/api/masters/leaderboard', async (req, res) => {
       ORDER BY ${orderBy}
     `);
     res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/masters/performance-series — Public per-master performance from real closed copied trades
+app.get('/api/masters/performance-series', async (req, res) => {
+  try {
+    const rawIds = String(req.query.master_ids || '').trim();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 5), 100);
+    if (!rawIds) return res.json([]);
+
+    const masterIds = [...new Set(
+      rawIds
+        .split(',')
+        .map((v) => parseInt(v.trim(), 10))
+        .filter((v) => Number.isInteger(v) && v > 0)
+    )];
+    if (masterIds.length === 0) return res.json([]);
+    const cacheKey = `${masterIds.slice().sort((a, b) => a - b).join(',')}|${limit}`;
+    const now = Date.now();
+    const cached = performanceSeriesCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return res.json(cached.value);
+    }
+
+    const result = await pg.query(
+      `
+      WITH ranked AS (
+        SELECT
+          ct.master_id,
+          ct.closed_at,
+          COALESCE(ct.profit_pips, 0) AS profit_pips,
+          ROW_NUMBER() OVER (PARTITION BY ct.master_id ORDER BY ct.closed_at DESC, ct.id DESC) AS rn
+        FROM copied_trades ct
+        JOIN masters m ON m.id = ct.master_id
+        WHERE ct.master_id = ANY($1::int[])
+          AND ct.status = 'closed'
+          AND ct.closed_at IS NOT NULL
+          AND m.status = 'active'
+      )
+      SELECT
+        master_id,
+        closed_at,
+        profit_pips
+      FROM ranked
+      WHERE rn <= $2
+      ORDER BY master_id ASC, closed_at ASC
+      `,
+      [masterIds, limit]
+    );
+
+    const grouped = new Map();
+    for (const row of result.rows) {
+      if (!grouped.has(row.master_id)) grouped.set(row.master_id, []);
+      grouped.get(row.master_id).push({
+        t: row.closed_at,
+        p: Number(row.profit_pips) || 0,
+      });
+    }
+
+    const response = masterIds.map((masterId) => {
+      const points = grouped.get(masterId) || [];
+      let cumulative = 0;
+      const series = points.map((point) => {
+        cumulative += point.p;
+        return {
+          t: point.t,
+          p: Number(point.p.toFixed(2)),
+          c: Number(cumulative.toFixed(2)),
+        };
+      });
+      return { master_id: masterId, series };
+    });
+
+    performanceSeriesCache.set(cacheKey, {
+      expiresAt: now + PERF_SERIES_CACHE_TTL_MS,
+      value: response,
+    });
+    res.json(response);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
