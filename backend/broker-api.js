@@ -14,14 +14,20 @@ const { Resend } = require('resend');
 // --- Configuration ---
 const ADMIN_API_KEY = process.env.API_KEY || 'changeme-generate-a-real-key';
 const VALID_ACTIONS = ['BUY', 'SELL', 'CLOSE_BUY', 'CLOSE_SELL', 'MODIFY'];
+const TOTAL_SHARDS = parseInt(process.env.TOTAL_SHARDS) || 3;
 const JWT_SECRET = process.env.JWT_SECRET || 'changeme-jwt-secret';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD || '';
+const ADMIN_PASSWORD_RAW  = process.env.ADMIN_PASSWORD || '';
+// Support both bcrypt hash (legacy) and plain text. Bcrypt hashes always start with $2.
+// Plain text avoids Docker Compose $ interpolation bugs that corrupt bcrypt hashes.
+const ADMIN_PASSWORD_HASH = ADMIN_PASSWORD_RAW.startsWith('$2') ? ADMIN_PASSWORD_RAW : null;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const COOKIE_OPTS = { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 };
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+const PERF_SERIES_CACHE_TTL_MS = parseInt(process.env.PERF_SERIES_CACHE_TTL_MS, 10) || 60000;
+const performanceSeriesCache = new Map();
 
 const app = express();
 app.use(cors({ credentials: true, origin: FRONTEND_URL }));
@@ -30,8 +36,8 @@ app.use(cookieParser());
 
 // --- Redis with reconnect strategy ---
 const redis = new Redis({
-  host: "127.0.0.1",
-  port: 6379,
+  host: process.env.REDIS_HOST || "127.0.0.1",
+  port: parseInt(process.env.REDIS_PORT) || 6379,
   retryStrategy: (times) => Math.min(times * 100, 3000),
   maxRetriesPerRequest: null
 });
@@ -82,8 +88,17 @@ pg.query(`
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     master_id INTEGER REFERENCES masters(id) ON DELETE CASCADE,
     lot_multiplier DOUBLE PRECISION DEFAULT 1.0,
-    status VARCHAR(10) DEFAULT 'active',
+    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('pending', 'active', 'paused', 'cancelled', 'suspended')),
+    paused_reason VARCHAR(255),
+    daily_loss_limit DOUBLE PRECISION,
+    max_drawdown_percent DOUBLE PRECISION,
+    total_profit DOUBLE PRECISION DEFAULT 0,
+    total_trades INTEGER DEFAULT 0,
+    win_rate DOUBLE PRECISION,
     created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    paused_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
     UNIQUE(user_id, master_id)
   );
 
@@ -102,12 +117,53 @@ pg.query(`
     copied_at TIMESTAMPTZ DEFAULT NOW()
   );
 
+  CREATE TABLE IF NOT EXISTS subscription_tiers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(20) UNIQUE NOT NULL,
+    max_concurrent_positions INTEGER,
+    commission_percent DOUBLE PRECISION DEFAULT 0,
+    features TEXT[],
+    monthly_fee DOUBLE PRECISION DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS subscription_changes (
+    id SERIAL PRIMARY KEY,
+    subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE CASCADE,
+    changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    change_type VARCHAR(30) NOT NULL,
+    old_values JSONB,
+    new_values JSONB,
+    reason VARCHAR(255),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS subscription_daily_stats (
+    id SERIAL PRIMARY KEY,
+    subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    trades_executed INTEGER DEFAULT 0,
+    daily_profit_loss DOUBLE PRECISION DEFAULT 0,
+    max_open_positions INTEGER DEFAULT 0,
+    UNIQUE(subscription_id, date)
+  );
+
+  INSERT INTO subscription_tiers (name, max_concurrent_positions, commission_percent, features, monthly_fee)
+  VALUES
+    ('standard', 10,  0,   ARRAY['basic_copy'], 0),
+    ('premium',  25,  1.0, ARRAY['basic_copy','risk_limits','symbol_control'], 0),
+    ('vip',      100, 2.0, ARRAY['basic_copy','risk_limits','symbol_control','advanced_analytics'], 0)
+  ON CONFLICT (name) DO NOTHING;
+
   -- Migrations for existing installs
   ALTER TABLE trade_audit_log ALTER COLUMN action TYPE VARCHAR(12);
   ALTER TABLE copied_trades ALTER COLUMN action TYPE VARCHAR(12);
   ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS ticket BIGINT;
   ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS sl DOUBLE PRECISION;
   ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS tp DOUBLE PRECISION;
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS close_price DOUBLE PRECISION;
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS profit_pips DOUBLE PRECISION;
+  ALTER TABLE copied_trades ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
   ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
   ALTER TABLE masters ADD COLUMN IF NOT EXISTS email VARCHAR(255);
   ALTER TABLE masters ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
@@ -115,16 +171,37 @@ pg.query(`
   ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
   ALTER TABLE masters ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64);
   ALTER TABLE masters ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
+  ALTER TABLE masters ADD COLUMN IF NOT EXISTS bio TEXT;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS daily_loss_limit DOUBLE PRECISION;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS max_drawdown_percent DOUBLE PRECISION;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS total_profit DOUBLE PRECISION DEFAULT 0;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS total_trades INTEGER DEFAULT 0;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS win_rate DOUBLE PRECISION;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS max_position_size DOUBLE PRECISION;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS max_concurrent_positions INTEGER;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS allowed_symbols TEXT[];
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS blocked_symbols TEXT[];
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS max_positions_per_day INTEGER;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS subscription_tier VARCHAR(20) DEFAULT 'standard';
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS commission_percent DOUBLE PRECISION DEFAULT 0;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS roi_percent DOUBLE PRECISION;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS notes TEXT;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS peak_profit DOUBLE PRECISION DEFAULT 0;
 
   -- Indexes for 10K+ user scale
   CREATE INDEX IF NOT EXISTS idx_trade_audit_master ON trade_audit_log(master_id);
   CREATE INDEX IF NOT EXISTS idx_trade_audit_time ON trade_audit_log(received_at DESC);
   CREATE INDEX IF NOT EXISTS idx_subscriptions_master ON subscriptions(master_id) WHERE status = 'active';
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_user_active ON subscriptions(user_id) WHERE status = 'active';
   CREATE INDEX IF NOT EXISTS idx_copied_trades_user ON copied_trades(user_id, copied_at DESC);
   CREATE INDEX IF NOT EXISTS idx_copied_trades_master ON copied_trades(master_id);
   CREATE INDEX IF NOT EXISTS idx_copied_trades_master_ticket ON copied_trades(master_id, ticket) WHERE status = 'open';
+  CREATE INDEX IF NOT EXISTS idx_copied_trades_sub ON copied_trades(user_id, master_id, status);
   CREATE INDEX IF NOT EXISTS idx_masters_status ON masters(status);
+  CREATE INDEX IF NOT EXISTS idx_subscription_changes ON subscription_changes(subscription_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_daily_stats ON subscription_daily_stats(subscription_id, date DESC);
 `).then(() => {
   console.log('PostgreSQL tables + indexes ready');
 }).catch((err) => {
@@ -134,6 +211,18 @@ pg.query(`
 // Load Protobuf format
 const root = protobuf.loadSync("trade.proto");
 const TradeSignal = root.lookupType("TradeSignal");
+
+// --- Audit helper: log subscription changes ---
+async function logSubscriptionChange(subscriptionId, changedBy, changeType, oldValues, newValues, reason = null) {
+  await pg.query(
+    `INSERT INTO subscription_changes (subscription_id, changed_by, change_type, old_values, new_values, reason)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [subscriptionId, changedBy || null, changeType,
+     oldValues ? JSON.stringify(oldValues) : null,
+     newValues ? JSON.stringify(newValues) : null,
+     reason]
+  ).catch(() => {});
+}
 
 // --- Admin API Key Middleware (for master CRUD, admin endpoints) ---
 function requireAdminKey(req, res, next) {
@@ -277,8 +366,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
   try {
     // 1. Check admin credentials (uses username, not email)
-    if (ADMIN_PASSWORD_HASH && email.trim() === ADMIN_USERNAME) {
-      const valid = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
+    if (ADMIN_PASSWORD_RAW && email.trim() === ADMIN_USERNAME) {
+      const valid = ADMIN_PASSWORD_HASH
+        ? await bcrypt.compare(password, ADMIN_PASSWORD_HASH)  // bcrypt hash
+        : password === ADMIN_PASSWORD_RAW;                     // plain text
       if (valid) {
         const token = jwt.sign({ sub: 'admin', role: 'admin' }, JWT_SECRET, { expiresIn: '7d' });
         res.cookie('auth_token', token, COOKIE_OPTS);
@@ -470,12 +561,22 @@ app.get('/api/me/trades', requireUserJWT, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 50, 500);
     const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const symbol = req.query.symbol?.trim() || null;
+    const masterId = req.query.master_id ? parseInt(req.query.master_id) : null;
+
+    const conditions = ['user_id = $1'];
+    const params = [req.userId];
+    let idx = 2;
+    if (symbol) { conditions.push(`symbol ILIKE $${idx++}`); params.push(`%${symbol}%`); }
+    if (masterId) { conditions.push(`master_id = $${idx++}`); params.push(masterId); }
+    const where = conditions.join(' AND ');
+
     const [tradesResult, countResult] = await Promise.all([
       pg.query(
-        'SELECT * FROM copied_trades WHERE user_id = $1 ORDER BY copied_at DESC LIMIT $2 OFFSET $3',
-        [req.userId, limit, offset]
+        `SELECT * FROM copied_trades WHERE ${where} ORDER BY copied_at DESC LIMIT $${idx} OFFSET $${idx + 1}`,
+        [...params, limit, offset]
       ),
-      pg.query('SELECT COUNT(*)::int AS count FROM copied_trades WHERE user_id = $1', [req.userId])
+      pg.query(`SELECT COUNT(*)::int AS count FROM copied_trades WHERE ${where}`, params)
     ]);
     res.json({ trades: tradesResult.rows, total: countResult.rows[0].count, limit, offset });
   } catch (err) {
@@ -511,16 +612,44 @@ app.put('/api/me/profile', requireUserJWT, async (req, res) => {
   }
 });
 
+// DELETE /api/me — Delete account permanently
+app.delete('/api/me', requireUserJWT, async (req, res) => {
+  try {
+    await pg.query('DELETE FROM users WHERE id = $1', [req.userId]);
+    res.clearCookie('auth_token');
+    res.json({ status: 'deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/me/subscribe — Subscribe to a master
 app.post('/api/me/subscribe', requireUserJWT, async (req, res) => {
-  const { master_id, lot_multiplier } = req.body;
+  const {
+    master_id, lot_multiplier, daily_loss_limit, max_drawdown_percent,
+    max_position_size, max_concurrent_positions, max_positions_per_day,
+    allowed_symbols, blocked_symbols, subscription_tier, notes,
+  } = req.body;
   if (!master_id) return res.status(400).json({ error: 'master_id is required' });
   try {
     const result = await pg.query(
-      'INSERT INTO subscriptions (user_id, master_id, lot_multiplier) VALUES ($1, $2, $3) RETURNING *',
-      [req.userId, master_id, lot_multiplier || 1.0]
+      `INSERT INTO subscriptions
+       (user_id, master_id, lot_multiplier, daily_loss_limit, max_drawdown_percent,
+        max_position_size, max_concurrent_positions, max_positions_per_day,
+        allowed_symbols, blocked_symbols, subscription_tier, notes, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active',NOW(),NOW())
+       RETURNING *`,
+      [
+        req.userId, master_id, lot_multiplier || 1.0,
+        daily_loss_limit || null, max_drawdown_percent || null,
+        max_position_size || null, max_concurrent_positions || null, max_positions_per_day || null,
+        allowed_symbols || null, blocked_symbols || null,
+        subscription_tier || 'standard', notes || null,
+      ]
     );
-    res.status(201).json(result.rows[0]);
+    const sub = result.rows[0];
+    await logSubscriptionChange(sub.id, req.userId, 'created', null, sub);
+    res.status(201).json(sub);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Already subscribed' });
     if (err.code === '23503') return res.status(404).json({ error: 'Master not found' });
@@ -544,8 +673,20 @@ app.delete('/api/me/subscribe/:masterId', requireUserJWT, async (req, res) => {
 
 // PUT /api/me/subscriptions/:id — Update own subscription
 app.put('/api/me/subscriptions/:id', requireUserJWT, async (req, res) => {
-  const { lot_multiplier, status } = req.body;
+  const {
+    lot_multiplier, status, paused_reason, daily_loss_limit, max_drawdown_percent,
+    max_position_size, max_concurrent_positions, max_positions_per_day,
+    allowed_symbols, blocked_symbols, subscription_tier, notes,
+  } = req.body;
   try {
+    // Fetch current state for audit log
+    const current = await pg.query(
+      'SELECT * FROM subscriptions WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.userId]
+    );
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    const old = current.rows[0];
+
     const fields = [];
     const values = [];
     let idx = 1;
@@ -555,15 +696,43 @@ app.put('/api/me/subscriptions/:id', requireUserJWT, async (req, res) => {
       fields.push(`lot_multiplier = $${idx++}`);
       values.push(parsed);
     }
-    if (status && ['active', 'paused'].includes(status)) { fields.push(`status = $${idx++}`); values.push(status); }
-    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    if (status && ['active', 'paused', 'cancelled', 'pending', 'suspended'].includes(status)) {
+      fields.push(`status = $${idx++}`);
+      values.push(status);
+      if (status === 'paused') {
+        fields.push(`paused_at = $${idx++}`);
+        values.push(new Date());
+      } else if (status === 'active') {
+        fields.push(`paused_at = $${idx++}`);
+        values.push(null);
+      } else if (status === 'cancelled') {
+        fields.push(`cancelled_at = $${idx++}`);
+        values.push(new Date());
+      }
+    }
+    if (paused_reason !== undefined) { fields.push(`paused_reason = $${idx++}`); values.push(paused_reason); }
+    if (daily_loss_limit !== undefined) { fields.push(`daily_loss_limit = $${idx++}`); values.push(daily_loss_limit === null ? null : Number(daily_loss_limit)); }
+    if (max_drawdown_percent !== undefined) { fields.push(`max_drawdown_percent = $${idx++}`); values.push(max_drawdown_percent === null ? null : Number(max_drawdown_percent)); }
+    if (max_position_size !== undefined) { fields.push(`max_position_size = $${idx++}`); values.push(max_position_size === null ? null : Number(max_position_size)); }
+    if (max_concurrent_positions !== undefined) { fields.push(`max_concurrent_positions = $${idx++}`); values.push(max_concurrent_positions === null ? null : parseInt(max_concurrent_positions)); }
+    if (max_positions_per_day !== undefined) { fields.push(`max_positions_per_day = $${idx++}`); values.push(max_positions_per_day === null ? null : parseInt(max_positions_per_day)); }
+    if (allowed_symbols !== undefined) { fields.push(`allowed_symbols = $${idx++}`); values.push(allowed_symbols); }
+    if (blocked_symbols !== undefined) { fields.push(`blocked_symbols = $${idx++}`); values.push(blocked_symbols); }
+    if (subscription_tier !== undefined) { fields.push(`subscription_tier = $${idx++}`); values.push(subscription_tier); }
+    if (notes !== undefined) { fields.push(`notes = $${idx++}`); values.push(notes); }
+    fields.push(`updated_at = $${idx++}`);
+    values.push(new Date());
+    if (fields.length === 1) return res.status(400).json({ error: 'Nothing to update' });
     values.push(req.params.id, req.userId);
     const result = await pg.query(
       `UPDATE subscriptions SET ${fields.join(', ')} WHERE id = $${idx} AND user_id = $${idx + 1} RETURNING *`,
       values
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
-    res.json(result.rows[0]);
+    const updated = result.rows[0];
+    const changeType = status && status !== old.status ? `status_${status}` : 'settings_updated';
+    await logSubscriptionChange(updated.id, req.userId, changeType, old, updated);
+    res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -582,6 +751,259 @@ app.get('/api/masters/public', requireUserJWT, async (req, res) => {
   }
 });
 
+// GET /api/me/subscriptions/:id/performance — Subscription performance stats
+app.get('/api/me/subscriptions/:id/performance', requireUserJWT, async (req, res) => {
+  try {
+    const result = await pg.query(
+      `SELECT id, total_profit, total_trades, win_rate, roi_percent, peak_profit,
+              (SELECT COUNT(*) FROM copied_trades WHERE user_id = s.user_id AND master_id = s.master_id AND status = 'open') AS open_positions
+       FROM subscriptions s WHERE id = $1 AND user_id = $2`,
+      [req.params.id, req.userId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/me/subscriptions/:id/daily-stats — Daily stats (last 30 days)
+app.get('/api/me/subscriptions/:id/daily-stats', requireUserJWT, async (req, res) => {
+  try {
+    const sub = await pg.query('SELECT id FROM subscriptions WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+    if (sub.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    const result = await pg.query(
+      `SELECT date, trades_executed, daily_profit_loss, max_open_positions
+       FROM subscription_daily_stats WHERE subscription_id = $1
+       ORDER BY date DESC LIMIT 30`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/me/subscriptions/:id/history — Subscription change audit trail
+app.get('/api/me/subscriptions/:id/history', requireUserJWT, async (req, res) => {
+  try {
+    const sub = await pg.query('SELECT id FROM subscriptions WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+    if (sub.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    const result = await pg.query(
+      `SELECT sc.id, sc.change_type, sc.old_values, sc.new_values, sc.reason, sc.created_at,
+              u.name AS changed_by_name
+       FROM subscription_changes sc
+       LEFT JOIN users u ON u.id = sc.changed_by
+       WHERE sc.subscription_id = $1
+       ORDER BY sc.created_at DESC LIMIT 50`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========================================
+// SUBSCRIPTION TIER ENDPOINTS
+// ========================================
+
+// GET /api/masters/leaderboard — Public master leaderboard (no auth required)
+app.get('/api/masters/leaderboard', async (req, res) => {
+  try {
+    const sort = req.query.sort || 'win_rate'; // 'win_rate' | 'followers' | 'signals'
+    const orderBy = sort === 'followers' ? 'subscriber_count DESC'
+                  : sort === 'signals'   ? 'signal_count DESC'
+                  : 'avg_win_rate DESC NULLS LAST';
+    const result = await pg.query(`
+      SELECT m.id, m.name, m.status, m.bio, m.created_at,
+        COALESCE(t.signal_count, 0)     AS signal_count,
+        t.last_signal_at,
+        COALESCE(s.subscriber_count, 0) AS subscriber_count,
+        ROUND(COALESCE(wr.avg_win_rate, 0)::numeric, 1) AS avg_win_rate
+      FROM masters m
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS signal_count, MAX(received_at) AS last_signal_at
+        FROM trade_audit_log GROUP BY master_id
+      ) t ON t.master_id = m.id
+      LEFT JOIN (
+        SELECT master_id, COUNT(*) AS subscriber_count
+        FROM subscriptions WHERE status = 'active' GROUP BY master_id
+      ) s ON s.master_id = m.id
+      LEFT JOIN (
+        SELECT master_id, AVG(win_rate) AS avg_win_rate
+        FROM subscriptions WHERE win_rate IS NOT NULL GROUP BY master_id
+      ) wr ON wr.master_id = m.id
+      WHERE m.status = 'active'
+      ORDER BY ${orderBy}
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/masters/performance-series — Public per-master performance from real closed copied trades
+app.get('/api/masters/performance-series', async (req, res) => {
+  try {
+    const rawIds = String(req.query.master_ids || '').trim();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 5), 100);
+    if (!rawIds) return res.json([]);
+
+    const masterIds = [...new Set(
+      rawIds
+        .split(',')
+        .map((v) => parseInt(v.trim(), 10))
+        .filter((v) => Number.isInteger(v) && v > 0)
+    )];
+    if (masterIds.length === 0) return res.json([]);
+    const cacheKey = `${masterIds.slice().sort((a, b) => a - b).join(',')}|${limit}`;
+    const now = Date.now();
+    const cached = performanceSeriesCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return res.json(cached.value);
+    }
+
+    const result = await pg.query(
+      `
+      WITH ranked AS (
+        SELECT
+          ct.master_id,
+          ct.closed_at,
+          COALESCE(ct.profit_pips, 0) AS profit_pips,
+          ROW_NUMBER() OVER (PARTITION BY ct.master_id ORDER BY ct.closed_at DESC, ct.id DESC) AS rn
+        FROM copied_trades ct
+        JOIN masters m ON m.id = ct.master_id
+        WHERE ct.master_id = ANY($1::int[])
+          AND ct.status = 'closed'
+          AND ct.closed_at IS NOT NULL
+          AND m.status = 'active'
+      )
+      SELECT
+        master_id,
+        closed_at,
+        profit_pips
+      FROM ranked
+      WHERE rn <= $2
+      ORDER BY master_id ASC, closed_at ASC
+      `,
+      [masterIds, limit]
+    );
+
+    const grouped = new Map();
+    for (const row of result.rows) {
+      if (!grouped.has(row.master_id)) grouped.set(row.master_id, []);
+      grouped.get(row.master_id).push({
+        t: row.closed_at,
+        p: Number(row.profit_pips) || 0,
+      });
+    }
+
+    const response = masterIds.map((masterId) => {
+      const points = grouped.get(masterId) || [];
+      let cumulative = 0;
+      const series = points.map((point) => {
+        cumulative += point.p;
+        return {
+          t: point.t,
+          p: Number(point.p.toFixed(2)),
+          c: Number(cumulative.toFixed(2)),
+        };
+      });
+      return { master_id: masterId, series };
+    });
+
+    performanceSeriesCache.set(cacheKey, {
+      expiresAt: now + PERF_SERIES_CACHE_TTL_MS,
+      value: response,
+    });
+    res.json(response);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/subscription-tiers — List all tiers (public)
+app.get('/api/subscription-tiers', async (req, res) => {
+  try {
+    const result = await pg.query('SELECT * FROM subscription_tiers ORDER BY id ASC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/subscription-tiers — Create tier (admin)
+app.post('/api/subscription-tiers', requireAdminKey, async (req, res) => {
+  const { name, max_concurrent_positions, commission_percent, features, monthly_fee } = req.body;
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  try {
+    const result = await pg.query(
+      `INSERT INTO subscription_tiers (name, max_concurrent_positions, commission_percent, features, monthly_fee)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [name, max_concurrent_positions || null, commission_percent || 0, features || [], monthly_fee || 0]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Tier name already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/subscription-tiers/:name — Update tier (admin)
+app.put('/api/subscription-tiers/:name', requireAdminKey, async (req, res) => {
+  const { max_concurrent_positions, commission_percent, features, monthly_fee } = req.body;
+  try {
+    const result = await pg.query(
+      `UPDATE subscription_tiers
+       SET max_concurrent_positions = COALESCE($1, max_concurrent_positions),
+           commission_percent = COALESCE($2, commission_percent),
+           features = COALESCE($3, features),
+           monthly_fee = COALESCE($4, monthly_fee)
+       WHERE name = $5 RETURNING *`,
+      [max_concurrent_positions, commission_percent, features, monthly_fee, req.params.name]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Tier not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/subscriptions/:id/performance — Admin performance view
+app.get('/api/subscriptions/:id/performance', requireAdminKey, async (req, res) => {
+  try {
+    const result = await pg.query(
+      `SELECT id, total_profit, total_trades, win_rate, roi_percent, peak_profit,
+              (SELECT COUNT(*) FROM copied_trades WHERE user_id = s.user_id AND master_id = s.master_id AND status = 'open') AS open_positions
+       FROM subscriptions s WHERE id = $1`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/subscriptions/:id/history — Admin audit trail
+app.get('/api/subscriptions/:id/history', requireAdminKey, async (req, res) => {
+  try {
+    const result = await pg.query(
+      `SELECT sc.id, sc.change_type, sc.old_values, sc.new_values, sc.reason, sc.created_at,
+              u.name AS changed_by_name
+       FROM subscription_changes sc
+       LEFT JOIN users u ON u.id = sc.changed_by
+       WHERE sc.subscription_id = $1
+       ORDER BY sc.created_at DESC LIMIT 100`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========================================
 // MASTER PORTAL ENDPOINTS (require master JWT)
 // ========================================
@@ -590,7 +1012,7 @@ app.get('/api/masters/public', requireUserJWT, async (req, res) => {
 app.get('/api/master-me', requireMasterJWT, async (req, res) => {
   try {
     const result = await pg.query(`
-      SELECT m.id, m.name, m.email, m.status, m.api_key, m.created_at,
+      SELECT m.id, m.name, m.email, m.status, m.api_key, m.bio, m.created_at,
         COALESCE(t.signal_count, 0) AS signal_count,
         t.last_signal_at,
         COALESCE(s.subscriber_count, 0) AS subscriber_count
@@ -630,9 +1052,39 @@ app.get('/api/master-me/trades', requireMasterJWT, async (req, res) => {
   }
 });
 
-// PUT /api/master-me/profile — Update master's name, email, or password
+// GET /api/master-me/subscribers — Get list of subscribers for this master
+app.get('/api/master-me/subscribers', requireMasterJWT, async (req, res) => {
+  try {
+    const result = await pg.query(
+      'SELECT DISTINCT u.id, u.name FROM subscriptions s JOIN users u ON s.user_id = u.id WHERE s.master_id = $1 AND s.status = $2 ORDER BY u.name',
+      [req.masterId, 'active']
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/master-me/subscribers/:userId — Get subscriber profile details
+app.get('/api/master-me/subscribers/:userId', requireMasterJWT, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    const result = await pg.query(
+      'SELECT u.id, u.name, u.email, u.balance, u.created_at FROM subscriptions s JOIN users u ON s.user_id = u.id WHERE s.master_id = $1 AND u.id = $2 AND s.status = $3',
+      [req.masterId, userId, 'active']
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Subscriber not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/master-me/profile — Update master's name, email, password, or bio
 app.put('/api/master-me/profile', requireMasterJWT, async (req, res) => {
-  const { name, email, password } = req.body;
+  const { name, email, password, bio } = req.body;
   try {
     const fields = [];
     const values = [];
@@ -645,10 +1097,11 @@ app.put('/api/master-me/profile', requireMasterJWT, async (req, res) => {
       fields.push(`password_hash = $${idx++}`);
       values.push(hash);
     }
+    if (bio !== undefined) { fields.push(`bio = $${idx++}`); values.push(bio); }
     if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
     values.push(req.masterId);
     const result = await pg.query(
-      `UPDATE masters SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, status, api_key, created_at`,
+      `UPDATE masters SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, name, email, status, api_key, bio, created_at`,
       values
     );
     res.json(result.rows[0]);
@@ -741,7 +1194,8 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
 
   const messageBuffer = TradeSignal.encode(TradeSignal.create(payload)).finish();
 
-  redis.publish('channel:global_trades', messageBuffer).catch((err) => {
+  const shardId = parsedMasterId % TOTAL_SHARDS;
+  redis.publish(`channel:shard_${shardId}`, messageBuffer).catch((err) => {
     console.error('Redis publish failed:', err.message);
   });
 
@@ -755,23 +1209,83 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
     console.error('Audit log insert failed:', err.message);
   });
 
-  // Handle close signals — mark copied_trades as closed
+  // Handle close signals — mark copied_trades as closed + update P&L stats
   if (isClose) {
     const baseAction = upperAction === 'CLOSE_BUY' ? 'BUY' : 'SELL';
+    const closePrice = payload.price;
     try {
+      // Close by ticket first, then fallback to symbol+action
+      let closedRows = [];
       const closeResult = await pg.query(
-        `UPDATE copied_trades SET status = 'closed'
-         WHERE master_id = $1 AND ticket = $2 AND status = 'open'`,
-        [parsedMasterId, parsedTicket]
+        `UPDATE copied_trades
+         SET status = 'closed', close_price = $1, closed_at = NOW(),
+             profit_pips = CASE WHEN action = 'BUY' THEN $1 - price ELSE price - $1 END
+         WHERE master_id = $2 AND ticket = $3 AND status = 'open'
+         RETURNING id, user_id, master_id, action, price, profit_pips, lot_size`,
+        [closePrice, parsedMasterId, parsedTicket]
       );
+      closedRows = closeResult.rows;
 
-      if (closeResult.rowCount === 0) {
-        await pg.query(
-          `UPDATE copied_trades SET status = 'closed'
-           WHERE master_id = $1 AND symbol = $2 AND action = $3 AND status = 'open'
-             AND (ticket IS NULL OR ticket = 0)`,
-          [parsedMasterId, payload.symbol, baseAction]
+      if (closedRows.length === 0) {
+        const fallback = await pg.query(
+          `UPDATE copied_trades
+           SET status = 'closed', close_price = $1, closed_at = NOW(),
+               profit_pips = CASE WHEN action = 'BUY' THEN $1 - price ELSE price - $1 END
+           WHERE master_id = $2 AND symbol = $3 AND action = $4 AND status = 'open'
+             AND (ticket IS NULL OR ticket = 0)
+           RETURNING id, user_id, master_id, action, price, profit_pips, lot_size`,
+          [closePrice, parsedMasterId, payload.symbol, baseAction]
         );
+        closedRows = fallback.rows;
+      }
+
+      // Update subscription stats and check drawdown limits for each closed trade
+      for (const trade of closedRows) {
+        const profitPips = trade.profit_pips || 0;
+        const isWin = profitPips > 0;
+        try {
+          // Update subscription aggregate stats
+          const subUpdate = await pg.query(
+            `UPDATE subscriptions
+             SET total_profit = total_profit + $1,
+                 total_trades = total_trades + 1,
+                 peak_profit  = GREATEST(COALESCE(peak_profit, 0), total_profit + $1),
+                 win_rate = (
+                   SELECT COUNT(*) FILTER (WHERE profit_pips > 0) * 100.0 / NULLIF(COUNT(*), 0)
+                   FROM copied_trades
+                   WHERE user_id = $2 AND master_id = $3 AND status = 'closed'
+                 ),
+                 updated_at = NOW()
+             WHERE user_id = $2 AND master_id = $3
+             RETURNING id, total_profit, peak_profit, max_drawdown_percent, status`,
+            [profitPips, trade.user_id, trade.master_id]
+          );
+
+          if (subUpdate.rows.length > 0) {
+            const sub = subUpdate.rows[0];
+            // Update daily stats P&L
+            await pg.query(
+              `INSERT INTO subscription_daily_stats (subscription_id, date, daily_profit_loss)
+               VALUES ($1, CURRENT_DATE, $2)
+               ON CONFLICT (subscription_id, date)
+               DO UPDATE SET daily_profit_loss = subscription_daily_stats.daily_profit_loss + $2`,
+              [sub.id, profitPips]
+            );
+            // Auto-suspend on max drawdown breach
+            if (sub.status === 'active' && sub.max_drawdown_percent && sub.peak_profit > 0) {
+              const drawdownPct = (sub.peak_profit - sub.total_profit) / sub.peak_profit * 100;
+              if (drawdownPct >= sub.max_drawdown_percent) {
+                await pg.query(
+                  `UPDATE subscriptions SET status = 'suspended', paused_reason = $1, updated_at = NOW() WHERE id = $2`,
+                  [`Max drawdown ${sub.max_drawdown_percent}% exceeded`, sub.id]
+                );
+                await logSubscriptionChange(sub.id, null, 'suspended', { status: 'active' }, { status: 'suspended' }, 'max_drawdown exceeded');
+              }
+            }
+          }
+        } catch (statErr) {
+          console.error('P&L stat update failed:', statErr.message);
+        }
       }
     } catch (err) {
       console.error('Close copied trades failed:', err.message);
@@ -795,28 +1309,66 @@ app.post('/api/trade', requireMasterKey, async (req, res) => {
     }
   }
 
-  // Handle open signals — auto-copy to subscribed users
+  // Handle open signals — auto-copy to subscribed users with enforcement checks
   if (!isClose && !isModify) {
     try {
       const subs = await pg.query(
-        'SELECT user_id, lot_multiplier FROM subscriptions WHERE master_id = $1 AND status = $2',
+        'SELECT * FROM subscriptions WHERE master_id = $1 AND status = $2',
         [parsedMasterId, 'active']
       );
       for (const sub of subs.rows) {
-        pg.query(
-          'INSERT INTO copied_trades (user_id, master_id, symbol, action, price, ticket, sl, tp, lot_size) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+        // Symbol whitelist check
+        if (sub.allowed_symbols && sub.allowed_symbols.length > 0 && !sub.allowed_symbols.includes(payload.symbol)) continue;
+        // Symbol blacklist check
+        if (sub.blocked_symbols && sub.blocked_symbols.length > 0 && sub.blocked_symbols.includes(payload.symbol)) continue;
+
+        // Max concurrent positions check
+        if (sub.max_concurrent_positions) {
+          const openCount = await pg.query(
+            `SELECT COUNT(*) FROM copied_trades WHERE user_id = $1 AND master_id = $2 AND status = 'open'`,
+            [sub.user_id, parsedMasterId]
+          );
+          if (parseInt(openCount.rows[0].count) >= sub.max_concurrent_positions) continue;
+        }
+
+        // Max positions per day check
+        if (sub.max_positions_per_day) {
+          const todayStats = await pg.query(
+            `SELECT trades_executed FROM subscription_daily_stats WHERE subscription_id = $1 AND date = CURRENT_DATE`,
+            [sub.id]
+          );
+          const executed = todayStats.rows[0]?.trades_executed || 0;
+          if (executed >= sub.max_positions_per_day) continue;
+        }
+
+        // Daily loss limit check
+        if (sub.daily_loss_limit) {
+          const todayStats = await pg.query(
+            `SELECT daily_profit_loss FROM subscription_daily_stats WHERE subscription_id = $1 AND date = CURRENT_DATE`,
+            [sub.id]
+          );
+          const todayPL = todayStats.rows[0]?.daily_profit_loss || 0;
+          if (todayPL <= -sub.daily_loss_limit) continue;
+        }
+
+        // Insert copied trade
+        await pg.query(
+          `INSERT INTO copied_trades (user_id, master_id, symbol, action, price, ticket, sl, tp, lot_size)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
-            sub.user_id,
-            parsedMasterId,
-            payload.symbol,
-            payload.action,
-            payload.price,
-            hasTicket ? parsedTicket : null,
-            payload.sl,
-            payload.tp,
-            0.01 * sub.lot_multiplier,
+            sub.user_id, parsedMasterId, payload.symbol, payload.action, payload.price,
+            hasTicket ? parsedTicket : null, payload.sl, payload.tp, 0.01 * sub.lot_multiplier,
           ]
-        ).catch(() => {});
+        );
+
+        // Update daily stats (upsert)
+        await pg.query(
+          `INSERT INTO subscription_daily_stats (subscription_id, date, trades_executed)
+           VALUES ($1, CURRENT_DATE, 1)
+           ON CONFLICT (subscription_id, date)
+           DO UPDATE SET trades_executed = subscription_daily_stats.trades_executed + 1`,
+          [sub.id]
+        );
       }
     } catch (err) {
       console.error('Copy trades failed:', err.message);
@@ -1054,16 +1606,33 @@ app.delete('/api/users/:id', requireAdminKey, async (req, res) => {
 // SUBSCRIPTION ENDPOINTS
 // ========================================
 
-// POST /api/users/:id/subscribe — Subscribe to a master
+// POST /api/users/:id/subscribe — Admin subscribe user to a master
 app.post('/api/users/:id/subscribe', requireAdminKey, async (req, res) => {
-  const { master_id, lot_multiplier } = req.body;
+  const {
+    master_id, lot_multiplier, daily_loss_limit, max_drawdown_percent,
+    max_position_size, max_concurrent_positions, max_positions_per_day,
+    allowed_symbols, blocked_symbols, subscription_tier, notes,
+  } = req.body;
   if (!master_id) return res.status(400).json({ error: 'master_id is required' });
   try {
     const result = await pg.query(
-      'INSERT INTO subscriptions (user_id, master_id, lot_multiplier) VALUES ($1, $2, $3) RETURNING *',
-      [req.params.id, master_id, lot_multiplier || 1.0]
+      `INSERT INTO subscriptions
+       (user_id, master_id, lot_multiplier, daily_loss_limit, max_drawdown_percent,
+        max_position_size, max_concurrent_positions, max_positions_per_day,
+        allowed_symbols, blocked_symbols, subscription_tier, notes, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active',NOW(),NOW())
+       RETURNING *`,
+      [
+        req.params.id, master_id, lot_multiplier || 1.0,
+        daily_loss_limit || null, max_drawdown_percent || null,
+        max_position_size || null, max_concurrent_positions || null, max_positions_per_day || null,
+        allowed_symbols || null, blocked_symbols || null,
+        subscription_tier || 'standard', notes || null,
+      ]
     );
-    res.status(201).json(result.rows[0]);
+    const sub = result.rows[0];
+    await logSubscriptionChange(sub.id, null, 'created', null, sub, 'admin_created');
+    res.status(201).json(sub);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Already subscribed' });
     if (err.code === '23503') return res.status(404).json({ error: 'User or master not found' });
@@ -1085,37 +1654,62 @@ app.delete('/api/users/:id/subscribe/:masterId', requireAdminKey, async (req, re
   }
 });
 
-// PUT /api/subscriptions/:id — Update subscription (lot_multiplier, status)
+// PUT /api/subscriptions/:id — Admin update any subscription
 app.put('/api/subscriptions/:id', requireAdminKey, async (req, res) => {
-  const { lot_multiplier, status } = req.body;
+  const {
+    lot_multiplier, status, paused_reason, daily_loss_limit, max_drawdown_percent,
+    max_position_size, max_concurrent_positions, max_positions_per_day,
+    allowed_symbols, blocked_symbols, subscription_tier, notes,
+    total_profit, total_trades, win_rate, roi_percent,
+  } = req.body;
   const { id } = req.params;
   try {
+    const current = await pg.query('SELECT * FROM subscriptions WHERE id = $1', [id]);
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+    const old = current.rows[0];
+
     const fields = [];
     const values = [];
     let idx = 1;
 
     if (lot_multiplier !== undefined) {
       const parsed = Number(lot_multiplier);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        return res.status(400).json({ error: 'lot_multiplier must be a positive number' });
-      }
-      fields.push(`lot_multiplier = $${idx++}`);
-      values.push(parsed);
+      if (!Number.isFinite(parsed) || parsed <= 0) return res.status(400).json({ error: 'lot_multiplier must be a positive number' });
+      fields.push(`lot_multiplier = $${idx++}`); values.push(parsed);
     }
-    if (status && ['active', 'paused'].includes(status)) {
-      fields.push(`status = $${idx++}`);
-      values.push(status);
+    if (status && ['active', 'paused', 'cancelled', 'pending', 'suspended'].includes(status)) {
+      fields.push(`status = $${idx++}`); values.push(status);
+      if (status === 'paused') { fields.push(`paused_at = $${idx++}`); values.push(new Date()); }
+      else if (status === 'active') { fields.push(`paused_at = $${idx++}`); values.push(null); }
+      else if (status === 'cancelled') { fields.push(`cancelled_at = $${idx++}`); values.push(new Date()); }
     }
+    if (paused_reason !== undefined) { fields.push(`paused_reason = $${idx++}`); values.push(paused_reason); }
+    if (daily_loss_limit !== undefined) { fields.push(`daily_loss_limit = $${idx++}`); values.push(daily_loss_limit === null ? null : Number(daily_loss_limit)); }
+    if (max_drawdown_percent !== undefined) { fields.push(`max_drawdown_percent = $${idx++}`); values.push(max_drawdown_percent === null ? null : Number(max_drawdown_percent)); }
+    if (max_position_size !== undefined) { fields.push(`max_position_size = $${idx++}`); values.push(max_position_size === null ? null : Number(max_position_size)); }
+    if (max_concurrent_positions !== undefined) { fields.push(`max_concurrent_positions = $${idx++}`); values.push(max_concurrent_positions === null ? null : parseInt(max_concurrent_positions)); }
+    if (max_positions_per_day !== undefined) { fields.push(`max_positions_per_day = $${idx++}`); values.push(max_positions_per_day === null ? null : parseInt(max_positions_per_day)); }
+    if (allowed_symbols !== undefined) { fields.push(`allowed_symbols = $${idx++}`); values.push(allowed_symbols); }
+    if (blocked_symbols !== undefined) { fields.push(`blocked_symbols = $${idx++}`); values.push(blocked_symbols); }
+    if (subscription_tier !== undefined) { fields.push(`subscription_tier = $${idx++}`); values.push(subscription_tier); }
+    if (notes !== undefined) { fields.push(`notes = $${idx++}`); values.push(notes); }
+    if (total_profit !== undefined) { const p = Number(total_profit); if (Number.isFinite(p)) { fields.push(`total_profit = $${idx++}`); values.push(p); } }
+    if (total_trades !== undefined) { const p = Number(total_trades); if (Number.isFinite(p) && p >= 0) { fields.push(`total_trades = $${idx++}`); values.push(p); } }
+    if (win_rate !== undefined) { const p = win_rate === null ? null : Number(win_rate); if (p === null || (Number.isFinite(p) && p >= 0 && p <= 100)) { fields.push(`win_rate = $${idx++}`); values.push(p); } }
+    if (roi_percent !== undefined) { fields.push(`roi_percent = $${idx++}`); values.push(roi_percent === null ? null : Number(roi_percent)); }
 
-    if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
-
+    fields.push(`updated_at = $${idx++}`);
+    values.push(new Date());
+    if (fields.length === 1) return res.status(400).json({ error: 'Nothing to update' });
     values.push(id);
     const result = await pg.query(
       `UPDATE subscriptions SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
       values
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
-    res.json(result.rows[0]);
+    const updated = result.rows[0];
+    await logSubscriptionChange(updated.id, null, 'admin_updated', old, updated);
+    res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

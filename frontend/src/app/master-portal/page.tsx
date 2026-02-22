@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
 import { API } from '@/lib/api';
@@ -10,6 +11,8 @@ import {
   ChevronLeft, ChevronRight, Eye, EyeOff,
 } from 'lucide-react';
 import { PowerIcon } from '@/components/ui/PowerIcon';
+import { SubscriberStack } from '@/components/SubscriberStack';
+import { SubscriberProfileModal } from '@/components/SubscriberProfileModal';
 
 const LIMIT = 20;
 
@@ -19,6 +22,7 @@ interface MasterStats {
   id: number;
   name: string;
   email: string;
+  bio: string | null;
   status: string;
   api_key: string;
   created_at: string;
@@ -33,6 +37,11 @@ interface Trade {
   action: string;
   price: number;
   received_at: string;
+}
+
+interface Subscriber {
+  id: number;
+  name: string;
 }
 
 function fmt(ts: string | null) {
@@ -56,6 +65,11 @@ export default function MasterPortalPage() {
   // Stats
   const [stats, setStats] = useState<MasterStats | null>(null);
   const [statsError, setStatsError] = useState('');
+  
+  // Subscribers
+  const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
+  const [selectedSubscriber, setSelectedSubscriber] = useState<Subscriber | null>(null);
+  const [showProfileModal, setShowProfileModal] = useState(false);
 
   // Trades
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -73,6 +87,7 @@ export default function MasterPortalPage() {
   // Settings
   const [sName, setSName] = useState('');
   const [sEmail, setSEmail] = useState('');
+  const [sBio, setSBio] = useState('');
   const [sPassword, setSPassword] = useState('');
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState('');
@@ -86,8 +101,20 @@ export default function MasterPortalPage() {
       setStats(data);
       setSName(data.name);
       setSEmail(data.email ?? '');
+      setSBio(data.bio ?? '');
     } catch (err: any) {
       setStatsError(err.message);
+    }
+  }, []);
+
+  const loadSubscribers = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/master-me/subscribers`, { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      setSubscribers(Array.isArray(data) ? data : data.subscribers || []);
+    } catch {
+      // silently ignore
     }
   }, []);
 
@@ -109,9 +136,10 @@ export default function MasterPortalPage() {
 
   useEffect(() => {
     if (role === null) return; // still loading
-    if (role !== 'master') { router.replace('/login'); return; }
+    if (role !== 'master') { router.replace('/landing'); return; }
     loadStats();
-  }, [role, router, loadStats]);
+    loadSubscribers();
+  }, [role, router, loadStats, loadSubscribers]);
 
   useEffect(() => {
     if (tab === 'Trade History') loadTrades(0);
@@ -119,7 +147,7 @@ export default function MasterPortalPage() {
 
   const handleLogout = async () => {
     await logout();
-    router.push('/login');
+    router.push('/landing');
   };
 
   const copyKey = () => {
@@ -155,6 +183,7 @@ export default function MasterPortalPage() {
       const body: Record<string, string> = {};
       if (sName !== stats?.name) body.name = sName;
       if (sEmail !== (stats?.email ?? '')) body.email = sEmail;
+      if (sBio !== (stats?.bio ?? '')) body.bio = sBio;
       if (sPassword) body.password = sPassword;
       if (Object.keys(body).length === 0) { setSettingsMsg('No changes to save.'); return; }
       const res = await fetch(`${API}/master-me/profile`, {
@@ -201,13 +230,29 @@ export default function MasterPortalPage() {
               )}
             </div>
           </div>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-1.5 text-slate-400 hover:text-red-400 text-sm transition-colors"
-          >
-            <PowerIcon />
-            <span className="hidden sm:inline">Sign out</span>
-          </button>
+          <div className="flex items-center gap-4">
+            <Link
+              href="/faq"
+              className="text-sm text-slate-400 hover:text-emerald-400 transition-colors"
+              title="Open FAQ"
+            >
+              FAQ
+            </Link>
+            <Link
+              href="/portal"
+              className="text-sm text-slate-400 hover:text-emerald-400 transition-colors"
+              title="Open Copy Trader Portal"
+            >
+              Trader Portal
+            </Link>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 text-slate-400 hover:text-red-400 text-sm transition-colors"
+            >
+              <PowerIcon />
+              <span className="hidden sm:inline">Sign out</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -242,8 +287,19 @@ export default function MasterPortalPage() {
             {stats ? (
               <>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                  {/* Subscribers card with stacked avatars */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 hover:scale-105 transition-all duration-200 cursor-pointer">
+                    <div className="flex items-center gap-2 mb-3"><Users className="w-5 h-5 text-emerald-400" /><span className="text-slate-400 text-xs">Subscribers</span></div>
+                    <SubscriberStack
+                      subscribers={subscribers}
+                      onSubscriberClick={(sub) => {
+                        setSelectedSubscriber(sub);
+                        setShowProfileModal(true);
+                      }}
+                    />
+                  </div>
+
                   {[
-                    { icon: <Users className="w-5 h-5 text-emerald-400" />, label: 'Subscribers', value: stats.subscriber_count },
                     { icon: <Zap className="w-5 h-5 text-cyan-400" />, label: 'Signals Sent', value: stats.signal_count },
                     {
                       icon: <TrendingUp className="w-5 h-5 text-blue-400" />,
@@ -264,14 +320,14 @@ export default function MasterPortalPage() {
                       value: null,
                     },
                   ].map(({ icon, label, value }) => (
-                    <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 hover:scale-105 transition-all duration-200">
                       <div className="flex items-center gap-2 mb-2">{icon}<span className="text-slate-400 text-xs">{label}</span></div>
                       {value !== null && <div className="text-2xl font-bold text-white">{value}</div>}
                     </div>
                   ))}
                 </div>
 
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
                   <h3 className="text-sm font-medium text-slate-300 mb-3">Account Info</h3>
                   <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div><dt className="text-slate-500">Name</dt><dd className="text-white mt-0.5">{stats.name}</dd></div>
@@ -290,7 +346,7 @@ export default function MasterPortalPage() {
         {/* ── TRADE HISTORY ── */}
         {tab === 'Trade History' && (
           <div>
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
@@ -345,7 +401,7 @@ export default function MasterPortalPage() {
         {/* ── API KEY ── */}
         {tab === 'API Key' && stats && (
           <div className="max-w-lg space-y-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
               <h3 className="text-sm font-medium text-slate-300 mb-1">Your API Key</h3>
               <p className="text-slate-500 text-xs mb-4">
                 Use this key in your MT5 TradeSender EA as the <code className="text-slate-300">x-api-key</code> header.
@@ -402,7 +458,7 @@ export default function MasterPortalPage() {
               )}
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:bg-slate-800 hover:border-emerald-500/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-200">
               <h3 className="text-sm font-medium text-slate-300 mb-2">MT5 Setup</h3>
               <ol className="text-slate-400 text-xs space-y-1.5 list-decimal list-inside">
                 <li>Copy your API key above</li>
@@ -431,8 +487,9 @@ export default function MasterPortalPage() {
               )}
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Full name</label>
+                <label htmlFor="m-name" className="block text-sm font-medium text-slate-300 mb-1.5">Full name</label>
                 <input
+                  id="m-name"
                   type="text"
                   value={sName}
                   onChange={e => setSName(e.target.value)}
@@ -442,8 +499,9 @@ export default function MasterPortalPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Email address</label>
+                <label htmlFor="m-email" className="block text-sm font-medium text-slate-300 mb-1.5">Email address</label>
                 <input
+                  id="m-email"
                   type="email"
                   value={sEmail}
                   onChange={e => setSEmail(e.target.value)}
@@ -452,10 +510,27 @@ export default function MasterPortalPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                <label htmlFor="m-bio" className="block text-sm font-medium text-slate-300 mb-1.5">
+                  Bio <span className="text-slate-500 font-normal">(shown to potential subscribers)</span>
+                </label>
+                <textarea
+                  id="m-bio"
+                  value={sBio}
+                  onChange={e => setSBio(e.target.value)}
+                  rows={3}
+                  maxLength={300}
+                  placeholder="e.g. Scalping specialist focusing on EURUSD and GBPUSD. 5+ years experience."
+                  className="w-full bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors resize-none"
+                />
+                <p className="text-[10px] text-slate-600 mt-1">{sBio.length}/300</p>
+              </div>
+
+              <div>
+                <label htmlFor="m-pwd" className="block text-sm font-medium text-slate-300 mb-1.5">
                   New password <span className="text-slate-500 font-normal">(leave blank to keep current)</span>
                 </label>
                 <input
+                  id="m-pwd"
                   type="password"
                   value={sPassword}
                   onChange={e => setSPassword(e.target.value)}
@@ -475,6 +550,13 @@ export default function MasterPortalPage() {
             </form>
           </div>
         )}
+
+        {/* Subscriber Profile Modal */}
+        <SubscriberProfileModal
+          subscriber={selectedSubscriber}
+          isOpen={showProfileModal}
+          onClose={() => setShowProfileModal(false)}
+        />
       </div>
     </div>
   );

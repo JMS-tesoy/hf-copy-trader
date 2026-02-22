@@ -3,8 +3,13 @@
 ## Prerequisites
 
 - MetaTrader 5 (Build 2000+)
-- Node.js backend running (broker-api on port 4000, worker-server on port 8080)
-- Redis running on 127.0.0.1:6379
+- Backend running:
+  - **Docker** (recommended): `docker-compose up -d --build`
+  - **PM2** (development): `cd backend && npx pm2 start ecosystem.config.js`
+- Services:
+  - Nginx load balancer on port **80** (routes WebSocket connections)
+  - broker-api on port **4000** (receives HTTP POST from TradeSender)
+  - Redis & PostgreSQL (internal only)
 
 ## File Setup
 
@@ -70,13 +75,13 @@ The EA monitors your MT5 account for new positions. When you open a trade (manua
 
 ### TradeReceiver (attach to any chart)
 
-The EA connects to the WebSocket server and auto-executes incoming trade signals.
+The EA connects to the Nginx load-balanced WebSocket server and auto-executes incoming trade signals. The Nginx load balancer distributes connections across 3 sharded workers for scalability.
 
 **Inputs:**
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| WSHost | 127.0.0.1 | WebSocket server host |
-| WSPort | 8080 | WebSocket server port |
+| WSHost | 127.0.0.1 | WebSocket server host (Nginx LB) |
+| WSPort | 80 | WebSocket server port (Nginx port, not direct worker) |
 | LotSize | 0.01 | Trade size per signal |
 | Slippage | 10 | Max slippage (points) |
 | MagicNumber | 123456 | EA magic number |
@@ -86,22 +91,44 @@ The EA connects to the WebSocket server and auto-executes incoming trade signals
 ## Architecture
 
 ```
-┌──────────────┐    HTTP POST     ┌──────────────┐    Redis PubSub    ┌────────────────┐
-│ TradeSender  │ ───────────────► │  broker-api  │ ──────────────────►│ worker-server  │
-│   (MT5 EA)   │                  │  (port 4000) │                    │  (port 8080)   │
-└──────────────┘                  └──────────────┘                    └───────┬────────┘
-                                                                             │ WebSocket
-                                                                             │ (JSON)
-                                                                     ┌───────▼────────┐
-                                                                     │ TradeReceiver   │
-                                                                     │   (MT5 EA)      │
-                                                                     └─────────────────┘
+TradeSender (Master EA)
+       │
+       │ HTTP POST
+       ▼
+   broker-api (port 4000)
+   hash(master_id % 3)
+       │
+       ├──────────────────┬──────────────────┬──────────────────┐
+       ▼                  ▼                  ▼
+Redis channel:shard_0  channel:shard_1  channel:shard_2
+       │                  │                  │
+   worker-0:8081      worker-1:8082      worker-2:8083
+       │                  │                  │
+       └──────────────────┼──────────────────┘
+                          │
+                      Nginx LB (port 80)
+                      least_conn routing
+                          │
+                  TradeReceiver (Follower EA)
+                  WebSocket connection
 ```
+
+**Flow:**
+1. Master EA sends trade via HTTP POST → broker-api:4000
+2. broker-api hashes master_id → publishes to shard channel (Redis)
+3. Worker shard broadcasts to all followers on that shard
+4. Nginx load balances followers across 3 shards (least_conn algorithm)
+5. Each shard handles ~5,300 concurrent followers (16,000 total ÷ 3)
 
 ## Troubleshooting
 
-- **WebRequest error 4014**: Add the URL to allowed list in Tools > Options > Expert Advisors
-- **DLL import error**: Enable "Allow DLL imports" in Expert Advisors settings
-- **No connection**: Ensure backend is running (`node broker-api.js` and `node worker-server.js`)
-- **No trades executing**: Check "Allow Algo Trading" is enabled (green icon in toolbar)
-- **Symbol not found**: The signal symbol must exist in your broker's Market Watch
+| Issue | Solution |
+|-------|----------|
+| **WebRequest error 4014** (TradeSender) | Add `http://127.0.0.1:4000` to Tools > Options > Expert Advisors > Allowed URLs |
+| **DLL import error** (TradeReceiver) | Enable "Allow DLL imports" in Tools > Options > Expert Advisors |
+| **WebSocket connection timeout** (TradeReceiver) | Ensure Nginx is running; check firewall port 80 is open |
+| **No trades executing** | Check "Allow Algo Trading" is enabled (green icon in MT5 toolbar) |
+| **Symbol not found** | The trade symbol must exist in your broker's Market Watch window |
+| **TradeReceiver not receiving trades** | Verify WSPort is **80** (not 8080); Nginx must be routing correctly |
+| **Master trades not distributed evenly** | Check `master_id` is unique for each master trader (affects hashing) |
+| **High latency/lag** | If on single server: normal for 16,000 users. For production: scale to multiple VPS with load balancing |

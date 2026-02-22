@@ -12,7 +12,7 @@ function getJwtPayload(token: string): { role?: string } | null {
   }
 }
 
-const ADMIN_ROUTES = ['/', '/master', '/user', '/analytics'];
+const ADMIN_ROUTES = ['/admin', '/master', '/user', '/analytics'];
 const USER_ROUTES = ['/portal'];
 const MASTER_ROUTES = ['/master-portal'];
 const PUBLIC_ROUTES = ['/login', '/register', '/master-register'];
@@ -22,31 +22,32 @@ export function proxy(req: NextRequest) {
   const token = req.cookies.get('auth_token')?.value;
   const payload = token ? getJwtPayload(token) : null;
   const role = payload?.role;
+  const roleHome = role === 'admin' ? '/admin' : role === 'user' ? '/portal' : role === 'master' ? '/master-portal' : '/landing';
 
   // Admin routes — must be admin, else send to unified login
   if (ADMIN_ROUTES.some(r => pathname === r || pathname.startsWith(r + '/'))) {
     if (role !== 'admin') {
-      return NextResponse.redirect(new URL('/login', req.url));
+      return NextResponse.redirect(new URL(roleHome, req.url));
     }
   }
 
   // User portal — must be user, else send to unified login
   if (USER_ROUTES.some(r => pathname === r || pathname.startsWith(r + '/'))) {
     if (role !== 'user') {
-      return NextResponse.redirect(new URL('/login', req.url));
+      return NextResponse.redirect(new URL(roleHome, req.url));
     }
   }
 
   // Master portal — must be master, else send to unified login
   if (MASTER_ROUTES.some(r => pathname === r || pathname.startsWith(r + '/'))) {
     if (role !== 'master') {
-      return NextResponse.redirect(new URL('/login', req.url));
+      return NextResponse.redirect(new URL(roleHome, req.url));
     }
   }
 
   // If already authenticated, skip public pages
   if (PUBLIC_ROUTES.includes(pathname)) {
-    if (role === 'admin') return NextResponse.redirect(new URL('/', req.url));
+    if (role === 'admin') return NextResponse.redirect(new URL('/admin', req.url));
     if (role === 'user') return NextResponse.redirect(new URL('/portal', req.url));
     if (role === 'master') return NextResponse.redirect(new URL('/master-portal', req.url));
   }
@@ -55,7 +56,7 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/', '/master', '/master/:path*', '/user', '/user/:path*',
+  matcher: ['/', '/admin', '/admin/:path*', '/master', '/master/:path*', '/user', '/user/:path*',
             '/analytics', '/analytics/:path*', '/portal', '/portal/:path*',
             '/master-portal', '/master-portal/:path*',
             '/login', '/register', '/master-register'],

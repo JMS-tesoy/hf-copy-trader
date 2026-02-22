@@ -9,7 +9,7 @@ import type { ConnectionStatus } from '@/lib/useTradeSocket';
 import { useAuth } from '@/lib/AuthContext';
 
 const pageTitles: Record<string, string> = {
-  '/': 'Dashboard',
+  '/admin': 'Dashboard',
   '/master': 'Master Traders',
   '/user': 'Users',
   '/analytics': 'Analytics',
@@ -31,7 +31,7 @@ export function TopBar({ onMenuClick, status, notificationCount = 0, onBellClick
 
   const handleLogout = async () => {
     await logout();
-    router.push('/login');
+    router.push('/landing');
   };
 
   return (

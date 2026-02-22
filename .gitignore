@@ -1,12 +1,15 @@
 node_modules/
+scripts/backups/*.sql
 .env
 .env.local
+backend/docker-secrets.env
 .claude/
 *.log
 .next/
 dist/
 CLAUDE.md
 .mcp.json
+.mcp.local.json
 plan.md
 nul
 README.md
@@ -14,3 +17,5 @@ README.md
 *.mq4
 *.mq5
 START.md
+deployment-reference.md
+docs/

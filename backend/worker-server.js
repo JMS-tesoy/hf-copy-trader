@@ -8,14 +8,15 @@ require('events').defaultMaxListeners = 0;
 
 // --- Redis with reconnect strategy ---
 const redis = new Redis({
-  host: "127.0.0.1",
-  port: 6379,
+  host: process.env.REDIS_HOST || "127.0.0.1",
+  port: parseInt(process.env.REDIS_PORT) || 6379,
   retryStrategy: (times) => Math.min(times * 100, 3000),
   maxRetriesPerRequest: null,
   enableReadyCheck: false
 });
 
-const redisChannel = 'channel:global_trades';
+const SHARD_ID = process.env.SHARD_ID || '0';
+const redisChannel = `channel:shard_${SHARD_ID}`;
 
 // Heartbeat: 30s interval, prune dead connections
 const HEARTBEAT_INTERVAL = 30000;
@@ -27,8 +28,10 @@ const root = protobuf.loadSync("trade.proto");
 const TradeSignal = root.lookupType("TradeSignal");
 
 // --- WebSocket Server optimized for 10K+ concurrent connections ---
+const PORT = parseInt(process.env.PORT) || 8080;
+
 const wss = new WebSocket.Server({
-  port: 8080,
+  port: PORT,
   perMessageDeflate: false,             // Disable compression — saves CPU at scale
   maxPayload: 1024,                      // Trade signals are tiny, limit payload size
   backlog: 2048,                         // TCP backlog queue for burst connections
@@ -37,7 +40,7 @@ const wss = new WebSocket.Server({
 
 let connectionCount = 0;
 
-console.log(`Worker Server started on ws://127.0.0.1:8080`);
+console.log(`Worker Server [shard:${SHARD_ID}] started on ws://127.0.0.1:${PORT} — channel: ${redisChannel}`);
 
 // --- Ping/Pong Heartbeat to prune dead connections ---
 const heartbeat = setInterval(() => {

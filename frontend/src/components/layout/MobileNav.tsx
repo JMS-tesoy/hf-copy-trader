@@ -7,7 +7,7 @@ import { cn } from '@/lib/cn';
 import { X, LayoutDashboard, Crown, Users, BarChart3, Sun, Moon } from 'lucide-react';
 
 const navItems = [
-  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/master', label: 'Masters', icon: Crown },
   { href: '/user', label: 'Users', icon: Users },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
