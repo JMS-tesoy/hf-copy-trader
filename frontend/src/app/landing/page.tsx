@@ -384,15 +384,42 @@ export default function LandingPage() {
             </p>
           </div>
 
+          <style>{`
+            .hf-hero-card {
+              background: #111827;
+              border-radius: 1rem;
+              padding: 1rem;
+              border: 1px solid rgba(255,255,255,0.07);
+              box-shadow: 0 4px 16px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.07);
+              transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+              cursor: default;
+            }
+            .hf-hero-card:hover { transform: translateY(-7px); }
+            .hf-hero-emerald:hover {
+              box-shadow: 0 18px 48px rgba(52,211,153,0.28), 0 4px 12px rgba(52,211,153,0.14), inset 0 1px 0 rgba(255,255,255,0.09);
+              border-color: rgba(52,211,153,0.35);
+            }
+            .hf-hero-cyan:hover {
+              box-shadow: 0 18px 48px rgba(34,211,238,0.28), 0 4px 12px rgba(34,211,238,0.14), inset 0 1px 0 rgba(255,255,255,0.09);
+              border-color: rgba(34,211,238,0.35);
+            }
+            .hf-hero-yellow:hover {
+              box-shadow: 0 18px 48px rgba(253,224,71,0.22), 0 4px 12px rgba(253,224,71,0.12), inset 0 1px 0 rgba(255,255,255,0.09);
+              border-color: rgba(253,224,71,0.32);
+            }
+          `}</style>
+
           <div className="grid gap-3 sm:grid-cols-3">
             {[
-              { label: 'Tracked Masters', value: topMasters.length, icon: Crown },
-              { label: 'Total Followers', value: topMasters.reduce((sum, m) => sum + toNumber(m.subscriber_count), 0), icon: Users },
-              { label: 'Live Signals', value: topMasters.reduce((sum, m) => sum + toNumber(m.signal_count), 0), icon: Zap },
-            ].map(({ label, value, icon: Icon }) => (
-              <div key={label} className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 backdrop-blur">
-                <Icon className="h-5 w-5 text-emerald-300" />
-                <p className="mt-2 text-2xl font-bold text-white">{value}</p>
+              { label: 'Tracked Masters', value: topMasters.length, icon: Crown, card: 'hf-hero-emerald', iconClass: 'text-emerald-300 bg-emerald-400/10' },
+              { label: 'Total Followers', value: topMasters.reduce((sum, m) => sum + toNumber(m.subscriber_count), 0), icon: Users, card: 'hf-hero-cyan', iconClass: 'text-cyan-300 bg-cyan-400/10' },
+              { label: 'Live Signals', value: topMasters.reduce((sum, m) => sum + toNumber(m.signal_count), 0), icon: Zap, card: 'hf-hero-yellow', iconClass: 'text-yellow-300 bg-yellow-400/10' },
+            ].map(({ label, value, icon: Icon, card, iconClass }) => (
+              <div key={label} className={`hf-hero-card ${card}`}>
+                <div className={`inline-flex rounded-xl p-2 ${iconClass}`}>
+                  <Icon className="h-5 w-5" />
+                </div>
+                <p className="mt-3 text-2xl font-bold text-white">{value.toLocaleString()}</p>
                 <p className="mt-1 text-xs uppercase tracking-widest text-slate-400">{label}</p>
               </div>
             ))}
@@ -402,14 +429,43 @@ export default function LandingPage() {
         {/* PLATFORM STATS */}
         {!loading && !loadError && (
           <section className="mt-14 grid grid-cols-2 gap-4 md:grid-cols-4">
+            <style>{`
+              .hf-stat-card {
+                background: #111827;
+                border-radius: 1rem;
+                padding: 1.25rem;
+                text-align: center;
+                border: 1px solid rgba(255,255,255,0.07);
+                box-shadow: 0 4px 16px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.07);
+                transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+                cursor: default;
+              }
+              .hf-stat-card:hover { transform: translateY(-7px); }
+              .hf-stat-emerald:hover {
+                box-shadow: 0 18px 48px rgba(52,211,153,0.28), 0 4px 12px rgba(52,211,153,0.14), inset 0 1px 0 rgba(255,255,255,0.09);
+                border-color: rgba(52,211,153,0.35);
+              }
+              .hf-stat-violet:hover {
+                box-shadow: 0 18px 48px rgba(167,139,250,0.25), 0 4px 12px rgba(167,139,250,0.13), inset 0 1px 0 rgba(255,255,255,0.09);
+                border-color: rgba(167,139,250,0.32);
+              }
+              .hf-stat-cyan:hover {
+                box-shadow: 0 18px 48px rgba(34,211,238,0.25), 0 4px 12px rgba(34,211,238,0.13), inset 0 1px 0 rgba(255,255,255,0.09);
+                border-color: rgba(34,211,238,0.32);
+              }
+              .hf-stat-rose:hover {
+                box-shadow: 0 18px 48px rgba(251,113,133,0.25), 0 4px 12px rgba(251,113,133,0.13), inset 0 1px 0 rgba(255,255,255,0.09);
+                border-color: rgba(251,113,133,0.32);
+              }
+            `}</style>
             {[
-              { label: 'Active Masters', value: platformStats.totalMasters.toLocaleString() },
-              { label: 'Total Followers', value: platformStats.totalFollowers.toLocaleString() },
-              { label: 'Signals Delivered', value: platformStats.totalSignals.toLocaleString() },
-              { label: 'Avg Win Rate', value: `${platformStats.avgWinRate.toFixed(1)}%` },
-            ].map(({ label, value }) => (
-              <div key={label} className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 text-center backdrop-blur">
-                <p className="text-3xl font-bold text-white">{value}</p>
+              { label: 'Active Masters',    value: platformStats.totalMasters.toLocaleString(),              card: 'hf-stat-emerald', valueColor: 'text-emerald-300' },
+              { label: 'Total Followers',   value: platformStats.totalFollowers.toLocaleString(),            card: 'hf-stat-violet',  valueColor: 'text-violet-300' },
+              { label: 'Signals Delivered', value: platformStats.totalSignals.toLocaleString(),              card: 'hf-stat-cyan',    valueColor: 'text-cyan-300' },
+              { label: 'Avg Win Rate',      value: `${platformStats.avgWinRate.toFixed(1)}%`,               card: 'hf-stat-rose',    valueColor: 'text-rose-300' },
+            ].map(({ label, value, card, valueColor }) => (
+              <div key={label} className={`hf-stat-card ${card}`}>
+                <p className={`text-3xl font-bold ${valueColor}`}>{value}</p>
                 <p className="mt-1 text-xs uppercase tracking-widest text-slate-500">{label}</p>
               </div>
             ))}
@@ -424,31 +480,17 @@ export default function LandingPage() {
           </div>
           <div className="grid gap-6 md:grid-cols-3">
             {[
-              {
-                step: '01',
-                title: 'Create your account',
-                desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal — no coding required.',
-                gradient: 'from-emerald-500/20 to-transparent border-emerald-500/20',
-                dot: 'bg-emerald-400',
-              },
-              {
-                step: '02',
-                title: 'Follow a master trader',
-                desc: 'Browse the leaderboard, review real verified performance, and subscribe to a tier that fits your risk appetite.',
-                gradient: 'from-cyan-500/20 to-transparent border-cyan-500/20',
-                dot: 'bg-cyan-400',
-              },
-              {
-                step: '03',
-                title: 'Trades copy automatically',
-                desc: 'Every signal is mirrored to your broker in real-time — zero manual input, full transparency.',
-                gradient: 'from-purple-500/20 to-transparent border-purple-500/20',
-                dot: 'bg-purple-400',
-              },
-            ].map(({ step, title, desc, gradient, dot }) => (
-              <div key={step} className={`relative rounded-2xl border bg-gradient-to-b p-6 ${gradient}`}>
-                <div className={`absolute -top-3 left-6 h-6 w-6 rounded-full ${dot} ring-4 ring-slate-950`} />
-                <p className="mb-3 mt-2 text-5xl font-black text-white/8">{step}</p>
+              { step: '01', title: 'Create your account', desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal — no coding required.', dot: 'bg-emerald-400', glow: 'shadow-emerald-950' },
+              { step: '02', title: 'Follow a master trader', desc: 'Browse the leaderboard, review real verified performance, and subscribe to a tier that fits your risk appetite.', dot: 'bg-cyan-400', glow: 'shadow-cyan-950' },
+              { step: '03', title: 'Trades copy automatically', desc: 'Every signal is mirrored to your broker in real-time — zero manual input, full transparency.', dot: 'bg-purple-400', glow: 'shadow-purple-950' },
+            ].map(({ step, title, desc, dot }) => (
+              <div
+                key={step}
+                className="relative rounded-3xl p-6 transition-transform duration-300 hover:-translate-y-1.5"
+                style={{ background: '#111827', boxShadow: '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.08)' }}
+              >
+                <div className={`mb-5 h-8 w-8 rounded-full ${dot} shadow-lg`} />
+                <p className="mb-2 text-6xl font-black" style={{ color: 'rgba(255,255,255,0.04)' }}>{step}</p>
                 <h3 className="text-base font-semibold text-white">{title}</h3>
                 <p className="mt-2 text-sm leading-relaxed text-slate-400">{desc}</p>
               </div>
@@ -464,16 +506,20 @@ export default function LandingPage() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[
-              { icon: Zap, title: 'Sub-millisecond signals', desc: 'Protocol Buffer binary encoding over WebSocket delivers trades faster than any REST-based alternative.', accent: 'text-yellow-300 bg-yellow-400/10 border-yellow-500/20' },
-              { icon: TrendingUp, title: 'Verified performance', desc: "Every master's track record is built from real closed trades — not backtests or hypotheticals.", accent: 'text-emerald-300 bg-emerald-400/10 border-emerald-500/20' },
-              { icon: Shield, title: 'Risk controls', desc: 'Set symbol whitelists, max position sizes, daily loss limits, and concurrent position caps per subscription.', accent: 'text-cyan-300 bg-cyan-400/10 border-cyan-500/20' },
-              { icon: Globe, title: 'Multi-broker support', desc: 'Works with any MT5 broker worldwide. Automatic symbol suffix detection handles broker-specific naming.', accent: 'text-blue-300 bg-blue-400/10 border-blue-500/20' },
-              { icon: Server, title: 'Built to scale', desc: 'PM2 cluster mode, Redis pub/sub, and Nginx sharding handle thousands of simultaneous connections.', accent: 'text-purple-300 bg-purple-400/10 border-purple-500/20' },
-              { icon: Lock, title: 'Secure by default', desc: 'Per-master API keys, JWT httpOnly cookies, bcrypt hashing, and role-based access control throughout.', accent: 'text-rose-300 bg-rose-400/10 border-rose-500/20' },
-            ].map(({ icon: Icon, title, desc, accent }) => (
-              <div key={title} className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 backdrop-blur transition-colors hover:border-slate-700">
-                <div className={`mb-3 inline-flex rounded-xl border p-2.5 ${accent}`}>
-                  <Icon className="h-5 w-5" />
+              { icon: Zap, title: 'Sub-millisecond signals', desc: 'Protocol Buffer binary encoding over WebSocket delivers trades faster than any REST-based alternative.', iconColor: 'text-yellow-300', iconBg: 'bg-yellow-400/10' },
+              { icon: TrendingUp, title: 'Verified performance', desc: "Every master's track record is built from real closed trades — not backtests or hypotheticals.", iconColor: 'text-emerald-300', iconBg: 'bg-emerald-400/10' },
+              { icon: Shield, title: 'Risk controls', desc: 'Set symbol whitelists, max position sizes, daily loss limits, and concurrent position caps per subscription.', iconColor: 'text-cyan-300', iconBg: 'bg-cyan-400/10' },
+              { icon: Globe, title: 'Multi-broker support', desc: 'Works with any MT5 broker worldwide. Automatic symbol suffix detection handles broker-specific naming.', iconColor: 'text-blue-300', iconBg: 'bg-blue-400/10' },
+              { icon: Server, title: 'Built to scale', desc: 'PM2 cluster mode, Redis pub/sub, and Nginx sharding handle thousands of simultaneous connections.', iconColor: 'text-purple-300', iconBg: 'bg-purple-400/10' },
+              { icon: Lock, title: 'Secure by default', desc: 'Per-master API keys, JWT httpOnly cookies, bcrypt hashing, and role-based access control throughout.', iconColor: 'text-rose-300', iconBg: 'bg-rose-400/10' },
+            ].map(({ icon: Icon, title, desc, iconColor, iconBg }) => (
+              <div
+                key={title}
+                className="rounded-3xl p-5 transition-transform duration-300 hover:-translate-y-1.5"
+                style={{ background: '#111827', boxShadow: '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.08)' }}
+              >
+                <div className={`mb-3 inline-flex rounded-xl p-2.5 ${iconBg}`}>
+                  <Icon className={`h-5 w-5 ${iconColor}`} />
                 </div>
                 <h3 className="mb-1.5 text-sm font-semibold text-white">{title}</h3>
                 <p className="text-xs leading-relaxed text-slate-400">{desc}</p>
@@ -491,36 +537,120 @@ export default function LandingPage() {
           </div>
 
           <style>{`
-            @keyframes hf-beam { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
+            .hf-plan-card {
+              position: relative;
+              border-radius: 1rem;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+            }
+            .hf-plan-glow,
+            .hf-plan-white,
+            .hf-plan-border,
+            .hf-plan-darkbg {
+              position: absolute;
+              inset: 0;
+              overflow: hidden;
+              z-index: 0;
+              border-radius: 1rem;
+            }
+            .hf-plan-glow {
+              inset: -6px;
+              border-radius: 1.4rem;
+              filter: blur(28px);
+              opacity: 0.38;
+            }
+            .hf-plan-glow::before {
+              content: "";
+              position: absolute;
+              top: 50%; left: 50%;
+              transform: translate(-50%, -50%) rotate(60deg);
+              width: 800px; height: 800px;
+              background: conic-gradient(#000, #402fb5 5%, #000 38%, #000 50%, #cf30aa 60%, #000 87%);
+              transition: transform 2s;
+            }
+            .hf-plan-darkbg::before {
+              content: "";
+              position: absolute;
+              top: 50%; left: 50%;
+              transform: translate(-50%, -50%) rotate(82deg);
+              width: 800px; height: 800px;
+              background: conic-gradient(rgba(0,0,0,0), #18116a, rgba(0,0,0,0) 10%, rgba(0,0,0,0) 50%, #6e1b60, rgba(0,0,0,0) 60%);
+              transition: transform 2s;
+            }
+            .hf-plan-white {
+              inset: 2px;
+              border-radius: calc(1rem - 2px);
+              filter: blur(2px);
+            }
+            .hf-plan-white::before {
+              content: "";
+              position: absolute;
+              top: 50%; left: 50%;
+              transform: translate(-50%, -50%) rotate(83deg);
+              width: 800px; height: 800px;
+              filter: brightness(1.4);
+              background: conic-gradient(rgba(0,0,0,0) 0%, #a099d8, rgba(0,0,0,0) 8%, rgba(0,0,0,0) 50%, #dfa2da, rgba(0,0,0,0) 58%);
+              transition: transform 2s;
+            }
+            .hf-plan-border {
+              inset: 3.5px;
+              border-radius: calc(1rem - 3.5px);
+              filter: blur(0.5px);
+            }
+            .hf-plan-border::before {
+              content: "";
+              position: absolute;
+              top: 50%; left: 50%;
+              transform: translate(-50%, -50%) rotate(70deg);
+              width: 800px; height: 800px;
+              filter: brightness(1.3);
+              background: conic-gradient(#1c191c, #402fb5 5%, #1c191c 14%, #1c191c 50%, #cf30aa 60%, #1c191c 64%);
+              transition: transform 2s;
+            }
+            .hf-plan-inner {
+              position: relative;
+              z-index: 10;
+              margin: 4px;
+              background: #0c1222;
+              border-radius: calc(1rem - 4px);
+              width: calc(100% - 8px);
+              padding: 1.25rem;
+              flex: 1;
+            }
+            .hf-plan-card:hover > .hf-plan-darkbg::before {
+              transform: translate(-50%, -50%) rotate(-98deg);
+            }
+            .hf-plan-card:hover > .hf-plan-glow::before {
+              transform: translate(-50%, -50%) rotate(-120deg);
+            }
+            .hf-plan-card:hover > .hf-plan-white::before {
+              transform: translate(-50%, -50%) rotate(-97deg);
+            }
+            .hf-plan-card:hover > .hf-plan-border::before {
+              transform: translate(-50%, -50%) rotate(-110deg);
+            }
           `}</style>
           {loading ? (
             <p className="text-sm text-slate-400">Loading plans...</p>
           ) : loadError ? (
             <p className="text-sm text-red-400">{loadError}</p>
           ) : (
-            <div className="grid gap-4 md:grid-cols-3">
-              {tiers.map((tier, i) => {
-                const beamColors = [
-                  'conic-gradient(from 0deg, transparent 0%, transparent 75%, #34d399 88%, #6ee7b7 92%, transparent 100%)',
-                  'conic-gradient(from 0deg, transparent 0%, transparent 72%, #fbbf24 86%, #fde68a 91%, transparent 100%)',
-                  'conic-gradient(from 0deg, transparent 0%, transparent 75%, #a78bfa 88%, #c4b5fd 92%, transparent 100%)',
-                ];
-                const isPremium = i === 1;
+            <div className="grid gap-6 md:grid-cols-3">
+              {tiers.map((tier) => {
+                const isPremium = tier.name === 'premium';
                 return (
-                  <div key={tier.id} className="relative overflow-hidden rounded-2xl p-[1.5px] shadow-lg shadow-black/40">
-                    {/* spinning beam */}
-                    <div
-                      className="pointer-events-none absolute inset-[-100%]"
-                      style={{
-                        background: beamColors[i % beamColors.length],
-                        animation: `hf-beam ${isPremium ? '2.4s' : '3.2s'} linear infinite`,
-                        animationDelay: `${-i * 1.1}s`,
-                      }}
-                    />
-                    <article className="relative rounded-[calc(1rem-1.5px)] bg-slate-900 p-5">
+                  <div key={tier.id} className="hf-plan-card shadow-2xl shadow-black/60">
+                    <div className="hf-plan-glow" />
+                    <div className="hf-plan-darkbg" />
+                    <div className="hf-plan-darkbg" />
+                    <div className="hf-plan-darkbg" />
+                    <div className="hf-plan-white" />
+                    <div className="hf-plan-border" />
+                    <div className="hf-plan-inner">
                       {isPremium && (
                         <div className="absolute -top-px left-1/2 -translate-x-1/2">
-                          <span className="inline-block rounded-b-lg bg-gradient-to-r from-amber-400 to-yellow-300 px-3 py-0.5 text-[10px] font-bold uppercase tracking-widest text-slate-900">
+                          <span className="inline-block rounded-b-lg bg-gradient-to-r from-violet-500 to-fuchsia-500 px-3 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white shadow-lg">
                             Most Popular
                           </span>
                         </div>
@@ -546,7 +676,7 @@ export default function LandingPage() {
                           </li>
                         ))}
                       </ul>
-                    </article>
+                    </div>
                   </div>
                 );
               })}

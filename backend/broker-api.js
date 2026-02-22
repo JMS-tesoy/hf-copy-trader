@@ -926,7 +926,7 @@ app.get('/api/masters/performance-series', async (req, res) => {
 // GET /api/subscription-tiers — List all tiers (public)
 app.get('/api/subscription-tiers', async (req, res) => {
   try {
-    const result = await pg.query('SELECT * FROM subscription_tiers ORDER BY monthly_fee ASC');
+    const result = await pg.query('SELECT * FROM subscription_tiers ORDER BY id ASC');
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
