@@ -242,6 +242,36 @@ export default function PortalPage() {
 
   const wsStatusColor = wsStatus === 'connected' ? 'text-emerald-400' : wsStatus === 'connecting' ? 'text-amber-400' : 'text-red-400';
   const wsStatusLabel = wsStatus === 'connected' ? 'Live' : wsStatus === 'connecting' ? 'Connecting...' : 'Disconnected';
+  const dashboardPulseSeed = useMemo(() => {
+    const regions = ['Singapore', 'Dubai', 'London', 'New York', 'Sydney', 'Tokyo'];
+    if (subs.length > 0) {
+      return subs.slice(0, 6).map((s, i) =>
+        `New follower joined ${s.master_name} from ${regions[i % regions.length]}`
+      );
+    }
+    return [
+      'New follower joined from Singapore',
+      'Account activity updated',
+      'Master performance refreshed',
+      'New copy signal snapshot received',
+    ];
+  }, [subs]);
+  const [dashboardToasts, setDashboardToasts] = useState<Array<{ id: number; text: string }>>([]);
+
+  useEffect(() => {
+    if (!dashboardPulseSeed.length) return;
+    let idx = 0;
+    const timer = setInterval(() => {
+      const id = Date.now() + idx;
+      const text = dashboardPulseSeed[idx % dashboardPulseSeed.length];
+      idx += 1;
+      setDashboardToasts((prev) => [{ id, text }, ...prev].slice(0, 3));
+      setTimeout(() => {
+        setDashboardToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 5200);
+    }, 2400);
+    return () => clearInterval(timer);
+  }, [dashboardPulseSeed]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-gray-100">
@@ -656,6 +686,35 @@ export default function PortalPage() {
           </div>
         )}
       </div>
+
+      {dashboardToasts.length > 0 && (
+        <div className="pointer-events-none fixed bottom-5 right-4 z-50 flex w-[min(92vw,360px)] flex-col gap-2">
+          <style>{`
+            @keyframes dash-pop-in {
+              0% { opacity: 0; transform: translateY(10px) scale(0.96); }
+              100% { opacity: 1; transform: translateY(0) scale(1); }
+            }
+            @keyframes dash-glow {
+              0%, 100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
+              50% { box-shadow: 0 0 20px rgba(16, 185, 129, 0.24); }
+            }
+            .dash-pop-card {
+              animation: dash-pop-in 320ms ease-out, dash-glow 1.8s ease-in-out;
+            }
+          `}</style>
+          {dashboardToasts.map((item) => (
+            <div
+              key={item.id}
+              className="dash-pop-card rounded-xl border border-emerald-400/30 bg-slate-900/90 px-3 py-2 text-xs text-slate-200 backdrop-blur-sm"
+            >
+              <span className="inline-flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                {item.text}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

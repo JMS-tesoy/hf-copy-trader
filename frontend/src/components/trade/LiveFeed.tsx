@@ -17,9 +17,10 @@ function formatPrice(price: number) {
 interface LiveFeedProps {
   trades: Trade[];
   maxItems?: number;
+  title?: string;
 }
 
-export function LiveFeed({ trades, maxItems = 10 }: LiveFeedProps) {
+export function LiveFeed({ trades, maxItems = 10, title = 'Live Feed' }: LiveFeedProps) {
   const visible = trades.slice(0, maxItems);
 
   return (
@@ -27,7 +28,7 @@ export function LiveFeed({ trades, maxItems = 10 }: LiveFeedProps) {
       <div className="px-5 py-4 border-b border-gray-100 dark:border-slate-800">
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-slate-500">
-            Live Feed
+            {title}
           </h2>
           <span className="text-[10px] text-gray-300 dark:text-slate-600">Last {maxItems}</span>
         </div>

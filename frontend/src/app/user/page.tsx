@@ -12,6 +12,8 @@ import { SearchInput } from '@/components/ui/SearchInput';
 import { useToast } from '@/components/notifications/useToast';
 import { Users, Briefcase, Link2, Settings, Trash2, Edit2, Filter, X } from 'lucide-react';
 import { SubscriptionSettingsPanel, type SubscriptionFull } from '@/components/SubscriptionSettingsPanel';
+import { SymbolPieChart } from '@/components/charts/SymbolPieChart';
+import { LiveFeed } from '@/components/trade/LiveFeed';
 
 interface User {
   id: number;
@@ -119,6 +121,14 @@ export default function UserPage() {
       toast({ type: 'error', title: 'Failed to fetch user details' });
     }
   }, [toast, tradesPage]);
+
+  useEffect(() => {
+    if (!selectedUser || activeTab !== 'portfolio') return;
+    const timer = setInterval(() => {
+      selectUser(selectedUser.id, false);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [selectedUser, activeTab, selectUser]);
 
   const createUser = async () => {
     if (!newName.trim() || !newEmail.trim()) return;
@@ -236,6 +246,27 @@ export default function UserPage() {
   );
 
   const openTrades = trades.filter((t) => t.status === 'open');
+  const symbolExposureData = useMemo(() => {
+    const source = openTrades.length > 0 ? openTrades : trades;
+    const counts: Record<string, number> = {};
+    source.forEach((t) => {
+      counts[t.symbol] = (counts[t.symbol] || 0) + 1;
+    });
+    return Object.entries(counts).map(([symbol, count]) => ({ symbol, count }));
+  }, [openTrades, trades]);
+  const liveTrades = useMemo(() => {
+    const source = openTrades.length > 0 ? openTrades : trades;
+    return source
+      .slice()
+      .sort((a, b) => new Date(b.copied_at).getTime() - new Date(a.copied_at).getTime())
+      .map((t) => ({
+        master_id: t.master_id,
+        symbol: t.symbol,
+        action: t.action,
+        price: t.price,
+        timestamp: new Date(t.copied_at),
+      }));
+  }, [openTrades, trades]);
 
   const filteredUsers = useMemo(() => {
     if (!userSearch.trim()) return users;
@@ -438,6 +469,19 @@ export default function UserPage() {
                       <p className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-slate-500 mb-1">Subscriptions</p>
                       <p className="text-2xl font-bold font-mono">{selectedUser.subscriptions?.length || 0}</p>
                     </Card>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <Card>
+                      <h3 className="text-xs font-semibold uppercase tracking-widest text-gray-500 dark:text-slate-500 mb-4">
+                        Your Symbol Exposure
+                      </h3>
+                      <SymbolPieChart data={symbolExposureData} maxItems={6} />
+                    </Card>
+
+                    <div className="min-h-[320px]">
+                      <LiveFeed trades={liveTrades} maxItems={15} title="Live Signals" />
+                    </div>
                   </div>
 
                   {/* Trade Filters */}
