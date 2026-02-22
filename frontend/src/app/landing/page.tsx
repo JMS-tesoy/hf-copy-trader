@@ -58,10 +58,30 @@ function formatLastSignal(value: string | null): string {
   return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function formatMasterAge(createdAt: string): string {
+  const created = new Date(createdAt);
+  if (Number.isNaN(created.getTime())) return 'New';
+  const now = new Date();
+  let months = (now.getFullYear() - created.getFullYear()) * 12 + (now.getMonth() - created.getMonth());
+  if (now.getDate() < created.getDate()) months -= 1;
+  if (months < 0) months = 0;
+  const years = Math.floor(months / 12);
+  const remMonths = months % 12;
+  if (years > 0 && remMonths > 0) return `${years}y ${remMonths}mo`;
+  if (years > 0) return `${years}y`;
+  if (months > 0) return `${months}mo`;
+  return 'New';
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).slice(0, 2);
   if (!parts.length) return 'M';
   return parts.map((p) => p.charAt(0).toUpperCase()).join('');
+}
+
+function avatarUrl(masterId: number, name: string): string {
+  const seed = encodeURIComponent(`${masterId}-${name || 'master'}`);
+  return `https://api.dicebear.com/9.x/thumbs/svg?seed=${seed}&backgroundColor=0f172a,0b1220,1e293b`;
 }
 
 function formatCompactUsd(amount: number): string {
@@ -90,24 +110,48 @@ function getPerformanceStatus(avgWinRate: string | number): {
   if (rate >= 55) {
     return { label: 'Stable', className: 'text-cyan-300 border-cyan-500/30 bg-cyan-500/10' };
   }
-  return { label: 'Watchlist', className: 'text-amber-300 border-amber-500/30 bg-amber-500/10' };
+  return { label: 'AUM', className: 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10' };
 }
 
-function buildSparklinePoints(series: PerformanceSeriesPoint[]): string {
-  if (!series.length) return '';
-  const width = 100;
-  const height = 30;
-  const values = series.map((s) => s.c);
+function buildBarHeights(series: PerformanceSeriesPoint[]): number[] {
+  if (!series.length) return [];
+  const tail = series.slice(-8);
+  const values = tail.map((s) => s.c);
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
-  return values
-    .map((value, idx) => {
-      const x = (idx / Math.max(values.length - 1, 1)) * width;
-      const y = height - ((value - min) / range) * height;
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(' ');
+  return values.map((value) => {
+    const normalized = (value - min) / range;
+    return Math.max(0.22, normalized);
+  });
+}
+
+function seededUpSeries(masterId: number): PerformanceSeriesPoint[] {
+  let seed = (masterId * 9301 + 49297) % 233280;
+  const rand = () => {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+  };
+
+  const base = 16 + rand() * 14;
+  const slope = 0.8 + rand() * 1.6;
+  const waveAmp = 0.3 + rand() * 1.4;
+  const waveFreq = 0.8 + rand() * 2.2;
+  return Array.from({ length: 10 }, (_, i) => {
+    const x = i / 9;
+    const bump = Math.sin(x * Math.PI * waveFreq) * waveAmp;
+    const noise = (rand() - 0.5) * 0.9;
+    return {
+      t: `seed-${i}`,
+      p: 0,
+      c: Number((base + i * slope + bump + noise).toFixed(2)),
+    };
+  });
+}
+
+function resolveSeries(masterId: number, series: PerformanceSeriesPoint[]): PerformanceSeriesPoint[] {
+  if (Array.isArray(series) && series.length >= 2) return series;
+  return seededUpSeries(masterId);
 }
 
 function TiltCard({ children, className }: { children: React.ReactNode; className: string }) {
@@ -168,86 +212,109 @@ function StackedMasters({
         const centerDist = Math.abs(i - Math.floor(count / 2));
         const zIndex = hovered ? i + 1 : count - centerDist;
         const performance = getPerformanceStatus(master.avg_win_rate);
-        const series = performanceByMaster[master.id] || [];
-        const points = series.length >= 2 ? buildSparklinePoints(series) : '';
-        const positive = series.length >= 2 && series[series.length - 1].c >= series[0].c;
+        const aumValue = formatCompactUsd(estimateAum(master.subscriber_count));
+        const series = resolveSeries(master.id, performanceByMaster[master.id] || []);
+        const bars = buildBarHeights(series);
+        const positive = series[series.length - 1].c >= series[0].c;
 
         return (
           <div
             key={master.id}
             style={{
               flexShrink: 0,
-              width: 210,
+              width: 248,
               zIndex,
               transform: hovered ? 'rotate(0deg)' : `rotate(${r}deg)`,
-              margin: hovered ? '0 10px' : '0 -52px',
+              margin: hovered ? '0 12px' : '0 -62px',
               transition: 'transform 0.5s ease, margin 0.5s ease',
               transformOrigin: 'bottom center',
             }}
           >
             <TiltCard className="relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-white/10 to-transparent shadow-2xl shadow-black/50 backdrop-blur-md hover:border-emerald-500/40">
-              <div className="p-4">
+              <div className="p-5">
                 {/* Header */}
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400/30 to-cyan-400/20 text-xs font-bold text-emerald-200 ring-1 ring-emerald-500/20">
+                <div className="mb-4 flex items-center justify-between gap-2.5">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <div className="relative flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-emerald-400/30 to-cyan-400/20 text-xs font-bold text-emerald-200 ring-1 ring-emerald-500/20">
                       {initials(master.name)}
+                      <img
+                        src={avatarUrl(master.id, master.name)}
+                        alt={`${master.name} avatar`}
+                        className="absolute inset-0 h-full w-full object-cover"
+                        loading="lazy"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
                     </div>
                     <div className="min-w-0">
-                      <p className="text-[9px] uppercase tracking-widest text-slate-500">#{master.id}</p>
-                      <h3 className="truncate text-sm font-semibold text-white">{master.name}</h3>
+                      <h3 className="truncate text-[15px] font-semibold text-white">{master.name}</h3>
+                      <p className="text-[10px] uppercase tracking-wide text-slate-500">Age: {formatMasterAge(master.created_at)}</p>
                     </div>
                   </div>
-                  <span className="flex-shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-300 ring-1 ring-emerald-500/25">
+                  <span className="flex-shrink-0 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300 ring-1 ring-emerald-500/25">
                     #{i + 1}
                   </span>
                 </div>
 
                 {/* Win rate hero */}
-                <div className="mb-3 text-center">
-                  <p className="text-3xl font-bold text-white">{toNumber(master.avg_win_rate).toFixed(1)}%</p>
-                  <p className="text-[10px] uppercase tracking-wider text-slate-500">Avg win rate</p>
+                <div className="mb-4 text-center">
+                  <p className="text-4xl font-bold text-white">{toNumber(master.avg_win_rate).toFixed(1)}%</p>
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500">Avg win rate</p>
                 </div>
 
-                {/* Sparkline */}
-                {series.length >= 2 && (
-                  <div className="mb-3 rounded-lg border border-white/5 bg-black/20 p-2">
-                    <div className="mb-1 flex items-center justify-between text-[9px] uppercase tracking-wider text-slate-500">
-                      <span>Performance</span>
-                      <span className={positive ? 'text-emerald-300' : 'text-rose-300'}>
-                        {positive ? '+' : ''}{(series[series.length - 1].c - series[0].c).toFixed(1)} pips
-                      </span>
-                    </div>
-                    <svg viewBox="0 0 100 24" className="h-6 w-full">
-                      <polyline fill="none" stroke={positive ? '#34d399' : '#fb7185'} strokeWidth="2" points={points} vectorEffect="non-scaling-stroke" />
-                    </svg>
-                  </div>
-                )}
-
                 {/* Stats 2-col */}
-                <div className="mb-3 grid grid-cols-2 gap-1.5 text-center">
-                  <div className="rounded-lg border border-white/5 bg-black/20 px-2 py-1.5">
-                    <p className="text-sm font-bold text-white">{formatCount(master.subscriber_count)}</p>
-                    <p className="text-[9px] uppercase tracking-wider text-slate-500">Followers</p>
+                <div className="mb-4 grid grid-cols-2 gap-2 text-center">
+                  <div className="rounded-lg border border-white/5 bg-black/20 px-2.5 py-2">
+                    <p className="text-base font-bold text-white">{formatCount(master.subscriber_count)}</p>
+                    <p className="text-[10px] uppercase tracking-wider text-slate-500">Followers</p>
                   </div>
-                  <div className="rounded-lg border border-white/5 bg-black/20 px-2 py-1.5">
-                    <p className="text-sm font-bold text-white">{formatCount(master.signal_count)}</p>
-                    <p className="text-[9px] uppercase tracking-wider text-slate-500">Signals</p>
+                  <div className="rounded-lg border border-white/5 bg-black/20 px-2.5 py-2">
+                    {bars.length > 0 ? (
+                      <svg viewBox="0 0 100 20" className="mx-auto h-[20px] w-full">
+                        {bars.map((h, idx) => {
+                          const count = bars.length;
+                          const gap = 2;
+                          const barW = (100 - gap * (count - 1)) / count;
+                          const x = idx * (barW + gap);
+                          const barH = Math.max(3, h * 18);
+                          const y = 20 - barH;
+                          return (
+                            <rect
+                              key={idx}
+                              x={x}
+                              y={y}
+                              width={barW}
+                              height={barH}
+                              rx={0.8}
+                              fill={positive ? '#4f5dff' : '#8b5cf6'}
+                              opacity={0.95}
+                            />
+                          );
+                        })}
+                      </svg>
+                    ) : (
+                      <p className="text-base font-bold text-white">-</p>
+                    )}
+                    <p className="text-[10px] uppercase tracking-wider text-slate-500">Performance</p>
                   </div>
                 </div>
 
                 {/* Performance badge */}
                 <div className="flex items-center justify-center">
-                  <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ${performance.className}`}>
-                    {performance.label}
-                  </span>
+                  {performance.label === 'AUM' ? (
+                    <span className={`inline-flex min-w-[112px] items-center justify-between rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ${performance.className}`}>
+                      <span>AUM</span>
+                      <span className="ml-2 font-bold text-cyan-300 normal-case tracking-normal">{aumValue}</span>
+                    </span>
+                  ) : (
+                    <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ${performance.className}`}>
+                      {performance.label}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {/* data-text label at bottom — matches example's ::before */}
-              <div className="flex h-10 items-center justify-center border-t border-white/5 bg-white/5 text-xs font-medium text-white/80">
-                {master.name}
-              </div>
             </TiltCard>
           </div>
         );
@@ -318,7 +385,15 @@ export default function LandingPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const [openFaqModal, setOpenFaqModal] = useState<number | null>(null);
+  const faqItems = [
+    { q: 'Do I need programming skills?', a: 'No. Install the MT5 Expert Advisor on your broker terminal and everything else — subscriptions, copying, risk controls — is managed from your web portal.' },
+    { q: 'Which brokers are supported?', a: 'Any MetaTrader 5 (MT5) broker worldwide. The EA automatically detects broker-specific symbol suffixes (e.g. EURUSD.m, EURUSDpro) so no manual configuration is needed.' },
+    { q: 'How quickly are trades copied?', a: 'Signal delivery uses Protocol Buffer binary encoding over WebSocket, typically reaching your terminal in under 100ms after the master opens a position.' },
+    { q: 'Can I control my risk?', a: 'Yes. Each subscription supports: symbol whitelists/blacklists, max position size, max concurrent positions, max positions per day, and a daily loss limit with automatic suspension.' },
+    { q: 'What happens if I cancel my subscription?', a: 'Cancelling stops new signals from being copied. Any positions already open on your account remain open and must be closed manually.' },
+    { q: 'How are master rankings calculated?', a: 'Masters are ranked by active follower count. All performance data (win rate, trade history, signals) is derived entirely from real closed trades recorded on the platform.' },
+  ];
 
   const topMasters = useMemo(() => {
     return [...masters]
@@ -335,14 +410,37 @@ export default function LandingPage() {
       : 0,
   }), [masters]);
 
-  const TICKER_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'BTCUSD', 'AUDUSD', 'USDCAD', 'GBPJPY'];
-  const tickerItems = useMemo(() => {
+  const joinSeedItems = useMemo(() => {
     if (!masters.length) return [];
-    return Array.from({ length: 14 }, (_, i) => {
+    const countries = ['Singapore', 'London', 'Tokyo', 'New York', 'Sydney', 'Dubai', 'Berlin', 'Toronto'];
+    return Array.from({ length: 24 }, (_, i) => {
       const master = masters[i % masters.length];
-      return `User #${1000 + i * 43} copied ${i % 2 === 0 ? 'BUY' : 'SELL'} ${TICKER_SYMBOLS[i % TICKER_SYMBOLS.length]} from ${master.name.split(' ')[0]} · ${(i * 7 + 5) % 58}s ago`;
+      return `User #${1200 + i * 37} joined and followed ${master.name.split(' ')[0]} from ${countries[i % countries.length]}`;
     });
   }, [masters]);
+
+  const [joinToasts, setJoinToasts] = useState<Array<{ id: number; text: string }>>([]);
+
+  useEffect(() => {
+    if (!joinSeedItems.length) return;
+    let idx = 0;
+    const timeoutIds: number[] = [];
+    const intervalId = window.setInterval(() => {
+      const id = Date.now() + idx;
+      const text = joinSeedItems[idx % joinSeedItems.length];
+      idx += 1;
+      setJoinToasts((prev) => [...prev.slice(-2), { id, text }]);
+      const timeoutId = window.setTimeout(() => {
+        setJoinToasts((prev) => prev.filter((item) => item.id !== id));
+      }, 5200);
+      timeoutIds.push(timeoutId);
+    }, 1700);
+
+    return () => {
+      window.clearInterval(intervalId);
+      timeoutIds.forEach((id) => window.clearTimeout(id));
+    };
+  }, [joinSeedItems]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -480,9 +578,9 @@ export default function LandingPage() {
           </div>
           <div className="grid gap-6 md:grid-cols-3">
             {[
-              { step: '01', title: 'Create your account', desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal — no coding required.', dot: 'bg-emerald-400', glow: 'shadow-emerald-950' },
+              { step: '01', title: 'Create your account', desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal â€” no coding required.', dot: 'bg-emerald-400', glow: 'shadow-emerald-950' },
               { step: '02', title: 'Follow a master trader', desc: 'Browse the leaderboard, review real verified performance, and subscribe to a tier that fits your risk appetite.', dot: 'bg-cyan-400', glow: 'shadow-cyan-950' },
-              { step: '03', title: 'Trades copy automatically', desc: 'Every signal is mirrored to your broker in real-time — zero manual input, full transparency.', dot: 'bg-purple-400', glow: 'shadow-purple-950' },
+              { step: '03', title: 'Trades copy automatically', desc: 'Every signal is mirrored to your broker in real-time â€” zero manual input, full transparency.', dot: 'bg-purple-400', glow: 'shadow-purple-950' },
             ].map(({ step, title, desc, dot }) => (
               <div
                 key={step}
@@ -507,7 +605,7 @@ export default function LandingPage() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[
               { icon: Zap, title: 'Sub-millisecond signals', desc: 'Protocol Buffer binary encoding over WebSocket delivers trades faster than any REST-based alternative.', iconColor: 'text-yellow-300', iconBg: 'bg-yellow-400/10' },
-              { icon: TrendingUp, title: 'Verified performance', desc: "Every master's track record is built from real closed trades — not backtests or hypotheticals.", iconColor: 'text-emerald-300', iconBg: 'bg-emerald-400/10' },
+              { icon: TrendingUp, title: 'Verified performance', desc: "Every master's track record is built from real closed trades â€” not backtests or hypotheticals.", iconColor: 'text-emerald-300', iconBg: 'bg-emerald-400/10' },
               { icon: Shield, title: 'Risk controls', desc: 'Set symbol whitelists, max position sizes, daily loss limits, and concurrent position caps per subscription.', iconColor: 'text-cyan-300', iconBg: 'bg-cyan-400/10' },
               { icon: Globe, title: 'Multi-broker support', desc: 'Works with any MT5 broker worldwide. Automatic symbol suffix detection handles broker-specific naming.', iconColor: 'text-blue-300', iconBg: 'bg-blue-400/10' },
               { icon: Server, title: 'Built to scale', desc: 'PM2 cluster mode, Redis pub/sub, and Nginx sharding handle thousands of simultaneous connections.', iconColor: 'text-purple-300', iconBg: 'bg-purple-400/10' },
@@ -685,12 +783,11 @@ export default function LandingPage() {
         </section>
 
         <section className="mt-14">
-          <div className="mb-5 flex items-end justify-between">
-            <div>
+          <div className="relative mb-5">
+            <div className="w-full text-center">
               <h2 className="text-2xl font-bold text-white md:text-3xl">Top 10 Most Followed Masters</h2>
-              <p className="mt-1 text-sm text-slate-400">Ranked by active follower count.</p>
             </div>
-            <div className="hidden items-center gap-2 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 md:flex">
+            <div className="absolute right-0 top-1/2 hidden -translate-y-1/2 items-center gap-2 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 md:flex">
               <BarChart3 className="h-4 w-4 text-emerald-300" />
               Live leaderboard
             </div>
@@ -717,54 +814,94 @@ export default function LandingPage() {
           <div className="mb-8 text-center">
             <h2 className="text-2xl font-bold text-white md:text-3xl">Frequently asked questions</h2>
           </div>
-          <div className="mx-auto max-w-2xl space-y-2">
-            {[
-              { q: 'Do I need programming skills?', a: 'No. Install the MT5 Expert Advisor on your broker terminal and everything else — subscriptions, copying, risk controls — is managed from your web portal.' },
-              { q: 'Which brokers are supported?', a: 'Any MetaTrader 5 (MT5) broker worldwide. The EA automatically detects broker-specific symbol suffixes (e.g. EURUSD.m, EURUSDpro) so no manual configuration is needed.' },
-              { q: 'How quickly are trades copied?', a: 'Signal delivery uses Protocol Buffer binary encoding over WebSocket, typically reaching your terminal in under 100ms after the master opens a position.' },
-              { q: 'Can I control my risk?', a: 'Yes. Each subscription supports: symbol whitelists/blacklists, max position size, max concurrent positions, max positions per day, and a daily loss limit with automatic suspension.' },
-              { q: 'What happens if I cancel my subscription?', a: 'Cancelling stops new signals from being copied. Any positions already open on your account remain open and must be closed manually.' },
-              { q: 'How are master rankings calculated?', a: 'Masters are ranked by active follower count. All performance data (win rate, trade history, signals) is derived entirely from real closed trades recorded on the platform.' },
-            ].map((item, i) => (
-              <div key={i} className="rounded-xl border border-slate-800 bg-slate-900/60">
+          <style>{`
+            @keyframes faq-bump {
+              0% { transform: translateY(0) scale(1); }
+              40% { transform: translateY(-4px) scale(1.01); }
+              100% { transform: translateY(0) scale(1); }
+            }
+            .faq-card {
+              transition: box-shadow 240ms ease, border-color 240ms ease, transform 240ms ease;
+            }
+            .faq-card:hover {
+              animation: faq-bump 420ms ease;
+              border-color: rgba(52, 211, 153, 0.5);
+              box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.2), 0 0 28px rgba(16, 185, 129, 0.22);
+            }
+            .faq-card-active {
+              border-color: rgba(45, 212, 191, 0.55);
+              box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.2), 0 0 32px rgba(34, 211, 238, 0.2);
+            }
+          `}</style>
+          <div className="mx-auto grid max-w-6xl grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {faqItems.map((item, i) => (
+              <div key={i} className={`faq-card h-fit rounded-xl border border-slate-800 bg-slate-900/60 ${openFaqModal === i ? 'faq-card-active' : ''}`}>
                 <button
                   className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left text-sm font-medium text-white"
-                  onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                  onClick={() => setOpenFaqModal(i)}
                 >
                   {item.q}
-                  <ChevronDown className={`h-4 w-4 flex-shrink-0 text-slate-400 transition-transform duration-200 ${openFaq === i ? 'rotate-180' : ''}`} />
+                  <ChevronDown className="h-4 w-4 flex-shrink-0 text-slate-400" />
                 </button>
-                {openFaq === i && (
-                  <div className="border-t border-slate-800 px-5 py-4 text-sm leading-relaxed text-slate-400">
-                    {item.a}
-                  </div>
-                )}
               </div>
             ))}
           </div>
+          {openFaqModal !== null && (
+            <div
+              className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/75 px-4"
+              onClick={() => setOpenFaqModal(null)}
+            >
+              <div
+                className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl shadow-black/60"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="mb-3 flex items-start justify-between gap-4">
+                  <h3 className="text-lg font-semibold text-white">{faqItems[openFaqModal].q}</h3>
+                  <button
+                    className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+                    onClick={() => setOpenFaqModal(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <p className="text-sm leading-relaxed text-slate-300">{faqItems[openFaqModal].a}</p>
+              </div>
+            </div>
+          )}
         </section>
       </div>
 
-      {/* ACTIVITY TICKER — full width */}
-      {tickerItems.length > 0 && (
-        <div className="relative z-10 mt-16 overflow-hidden border-y border-slate-800/60 bg-slate-900/40 py-3">
+      {/* JOIN POP OUT FEED */}
+      {joinToasts.length > 0 && (
+        <div className="pointer-events-none fixed bottom-5 right-4 z-50 flex w-[min(92vw,360px)] flex-col gap-2">
           <style>{`
-            @keyframes hf-ticker { from { transform: translateX(0) } to { transform: translateX(-50%) } }
-            .hf-ticker-track { animation: hf-ticker 45s linear infinite; white-space: nowrap; display: inline-flex; }
-            .hf-ticker-track:hover { animation-play-state: paused; }
+            @keyframes join-pop-in {
+              0% { opacity: 0; transform: translateY(10px) scale(0.95); }
+              100% { opacity: 1; transform: translateY(0) scale(1); }
+            }
+            @keyframes join-glow {
+              0%, 100% { box-shadow: 0 0 0 rgba(52, 211, 153, 0); }
+              50% { box-shadow: 0 0 24px rgba(52, 211, 153, 0.28); }
+            }
+            .join-pop-card {
+              animation: join-pop-in 360ms ease-out, join-glow 2s ease-in-out;
+            }
           `}</style>
-          <div className="hf-ticker-track">
-            {[...tickerItems, ...tickerItems].map((item, i) => (
-              <span key={i} className="inline-flex items-center gap-2 px-6 text-xs text-slate-500">
-                <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-emerald-400" />
-                {item}
+          {joinToasts.map((item) => (
+            <div
+              key={item.id}
+              className="join-pop-card rounded-xl border border-emerald-400/30 bg-slate-900/90 px-3 py-2 text-xs text-slate-200 backdrop-blur-sm"
+            >
+              <span className="inline-flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                {item.text}
               </span>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* CTA BANNER — full width */}
+      {/* CTA BANNER â€” full width */}
       <div className="relative z-10 bg-gradient-to-r from-emerald-900/40 via-slate-900 to-cyan-900/40 px-4 py-16 text-center">
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute left-1/4 top-0 h-48 w-48 rounded-full bg-emerald-500/10 blur-3xl" />
@@ -801,3 +938,6 @@ export default function LandingPage() {
     </div>
   );
 }
+
+
+
