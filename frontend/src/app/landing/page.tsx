@@ -1350,7 +1350,7 @@ export default function LandingPage() {
 
         {/* PLATFORM STATS */}
         {!loading && !loadError && (
-          <section className="mt-14 grid grid-cols-2 gap-4 md:grid-cols-4">
+          <section className={`mt-14 grid grid-cols-2 gap-4 ${isMobileOSDevice ? '' : 'md:grid-cols-4'}`}>
             <style>{`
               .hf-stat-card {
                 background: #111827;
@@ -1466,7 +1466,7 @@ export default function LandingPage() {
               pointer-events: none;
             }
           `}</style>
-          <div className="grid gap-6 md:grid-cols-3">
+          <div className={`grid gap-6 ${isMobileOSDevice ? 'grid-cols-1' : 'md:grid-cols-3'}`}>
             {[
               { step: '01', title: 'Create your account', desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal - no coding required.', dot: 'bg-emerald-400', line: 'rgba(52,211,153,0.9)', glow: 'rgba(52,211,153,0.22)' },
               { step: '02', title: 'Follow a master trader', desc: 'Browse the leaderboard, review real verified performance, and subscribe to a tier that fits your risk appetite.', dot: 'bg-cyan-400', line: 'rgba(34,211,238,0.9)', glow: 'rgba(34,211,238,0.2)' },
@@ -1554,7 +1554,7 @@ export default function LandingPage() {
             }
           `}</style>
 
-          <div className="grid gap-6 lg:grid-cols-2">
+          <div className={`grid gap-6 ${isMobileOSDevice ? 'grid-cols-1' : 'lg:grid-cols-2'}`}>
             <div className="rounded-2xl border border-slate-700/70 bg-slate-950/75 p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Signal Pipeline</p>
@@ -1567,7 +1567,7 @@ export default function LandingPage() {
                 <div className="absolute inset-x-8 top-[38px] z-0 hidden h-px bg-gradient-to-r from-cyan-500/0 via-cyan-300/60 to-emerald-300/0 sm:block" />
                 <div className="hf-pipe-beam absolute top-[38px] z-0 hidden h-1 w-14 -translate-y-1/2 rounded-full bg-gradient-to-r from-cyan-300 to-emerald-300 blur-[1px] sm:block" />
 
-                <div className="relative z-20 grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-4 sm:gap-2 sm:text-center">
+                <div className={`relative z-20 grid grid-cols-2 gap-3 text-[11px] ${isMobileOSDevice ? '' : 'sm:grid-cols-4 sm:gap-2 sm:text-center'}`}>
                   {[
                     { icon: TrendingUp, label: 'Master Signal' },
                     { icon: Server, label: 'HF Engine' },
@@ -1675,7 +1675,7 @@ export default function LandingPage() {
                 </div>
               </div>
 
-              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              <div className={`mt-4 grid gap-2 ${isMobileOSDevice ? 'grid-cols-1' : 'sm:grid-cols-3'}`}>
                 {[
                   { title: '01 Install EA', desc: 'Attach bridge to one MT5 chart.' },
                   { title: '02 Paste API Key', desc: 'Link your account securely.' },
@@ -1731,13 +1731,19 @@ export default function LandingPage() {
               padding: 1rem;
             }
           `}</style>
-          <div className="mb-4 grid gap-3 sm:grid-cols-3">
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-3">
             {[
               { label: 'Tracked Masters', value: topMasters.length, helper: 'Verified strategy providers', icon: Crown, card: 'hf-why-emerald', iconClass: 'text-emerald-300 bg-emerald-400/10' },
               { label: 'Total Followers', value: topMasters.reduce((sum, m) => sum + toNumber(m.subscriber_count), 0), helper: 'Accounts actively mirroring', icon: Users, card: 'hf-why-cyan', iconClass: 'text-cyan-300 bg-cyan-400/10' },
               { label: 'Live Signals', value: topMasters.reduce((sum, m) => sum + toNumber(m.signal_count), 0), helper: 'Realtime trade events delivered', icon: Zap, card: 'hf-why-yellow', iconClass: 'text-yellow-300 bg-yellow-400/10' },
-            ].map(({ label, value, helper, icon: Icon, card, iconClass }) => (
-              <TiltCard key={label} className={`hf-why-tilt-base hf-why-stat-card ${card}`} withGlow>
+            ].map(({ label, value, helper, icon: Icon, card, iconClass }, idx) => (
+              <TiltCard
+                key={label}
+                className={`hf-why-tilt-base hf-why-stat-card ${card} ${
+                  idx === 2 ? 'col-span-2 mx-auto w-full max-w-[340px] lg:col-span-1 lg:mx-0 lg:max-w-none' : ''
+                }`}
+                withGlow
+              >
                 <div className={`inline-flex rounded-xl p-2 ${iconClass}`}>
                   <Icon className="h-5 w-5" />
                 </div>
@@ -1747,7 +1753,7 @@ export default function LandingPage() {
               </TiltCard>
             ))}
           </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className={`grid gap-4 ${isMobileOSDevice ? 'grid-cols-1' : 'sm:grid-cols-2 lg:grid-cols-3'}`}>
             {[
               { icon: Zap, title: 'Sub-millisecond signals', desc: 'Protocol Buffer binary encoding over WebSocket delivers trades faster than any REST-based alternative.', iconColor: 'text-yellow-300', iconBg: 'bg-yellow-400/10' },
               { icon: TrendingUp, title: 'Verified performance', desc: "Every master's track record is built from real closed trades - not backtests or hypotheticals.", iconColor: 'text-emerald-300', iconBg: 'bg-emerald-400/10' },
@@ -1881,7 +1887,7 @@ export default function LandingPage() {
           ) : loadError ? (
             <p className="text-sm text-red-400">{loadError}</p>
           ) : (
-            <div className="grid gap-6 md:grid-cols-3">
+            <div className={`grid gap-6 ${isMobileOSDevice ? 'grid-cols-1' : 'md:grid-cols-3'}`}>
               {tiers.map((tier) => {
                 const isPremium = tier.name === 'premium';
                 return (
@@ -1957,7 +1963,7 @@ export default function LandingPage() {
               box-shadow: 0 0 32px rgba(34, 211, 238, 0.2);
             }
           `}</style>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className={`grid grid-cols-1 gap-3 ${isMobileOSDevice ? '' : 'md:grid-cols-2 xl:grid-cols-3'}`}>
             {faqItems.map((item, i) => (
               <div key={i} className={`faq-card h-fit rounded-xl bg-slate-900/60 ${openFaqModal === i ? 'faq-card-active' : ''}`}>
                 <button
