@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { API } from '@/lib/api';
-import { Crown, Users, BarChart3, Zap, CheckCircle2, ArrowRight, Sparkles, Shield, TrendingUp, Globe, Lock, ChevronDown, Server, X } from 'lucide-react';
+import { Crown, Users, BarChart3, Zap, CheckCircle2, ArrowRight, Sparkles, Shield, TrendingUp, Globe, Lock, ChevronDown, Server, X, UserPlus, Bot } from 'lucide-react';
 
 interface SubscriptionTier {
   id: number;
@@ -451,7 +451,8 @@ export default function LandingPage() {
     });
   }, [masters]);
 
-  const [joinToasts, setJoinToasts] = useState<Array<{ id: number; text: string; leaving?: boolean }>>([]);
+  const [joinToast, setJoinToast] = useState<{ id: number; text: string; leaving?: boolean } | null>(null);
+  const joinToastRef = useRef<{ id: number; text: string; leaving?: boolean } | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const lastChimeAtRef = useRef(0);
 
@@ -493,7 +494,7 @@ export default function LandingPage() {
     highpass.frequency.setValueAtTime(240, t0);
 
     master.gain.setValueAtTime(0.0001, t0);
-    master.gain.linearRampToValueAtTime(0.0432, t0 + 0.04);
+    master.gain.linearRampToValueAtTime(0.03024, t0 + 0.04);
     master.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.62);
 
     delay.delayTime.setValueAtTime(0.16, t0);
@@ -538,33 +539,35 @@ export default function LandingPage() {
   };
 
   useEffect(() => {
+    joinToastRef.current = joinToast;
+  }, [joinToast]);
+
+  useEffect(() => {
     if (!joinSeedItems.length) return;
     let idx = 0;
     const timeoutIds: number[] = [];
-    const maxToasts = 3;
     const fadeMs = 760;
+
+    const showToast = (id: number, text: string) => {
+      setJoinToast({ id, text, leaving: false });
+      playJoinChime();
+    };
 
     const intervalId = window.setInterval(() => {
       const id = Date.now() + idx;
       const text = joinSeedItems[idx % joinSeedItems.length];
       idx += 1;
-      playJoinChime();
 
-      setJoinToasts((prev) => {
-        let next = [...prev];
-        if (next.length >= maxToasts) {
-          const oldest = next.find((item) => !item.leaving);
-          if (oldest) {
-            next = next.map((item) => (item.id === oldest.id ? { ...item, leaving: true } : item));
-            const removeId = window.setTimeout(() => {
-              setJoinToasts((curr) => curr.filter((item) => item.id !== oldest.id));
-            }, fadeMs);
-            timeoutIds.push(removeId);
-          }
-        }
-        next.push({ id, text });
-        return next;
-      });
+      const current = joinToastRef.current;
+      if (current && !current.leaving) {
+        setJoinToast({ ...current, leaving: true });
+        const replaceId = window.setTimeout(() => {
+          showToast(id, text);
+        }, fadeMs);
+        timeoutIds.push(replaceId);
+      } else {
+        showToast(id, text);
+      }
     }, 2400);
 
     return () => {
@@ -684,45 +687,7 @@ export default function LandingPage() {
               display: inline-block;
               padding: 2px 2px;
             }
-            .hf-hero-card {
-              background: #111827;
-              border-radius: 1rem;
-              padding: 1rem;
-              border: 1px solid rgba(255,255,255,0.07);
-              box-shadow: 0 4px 16px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.07);
-              transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
-              cursor: default;
-            }
-            .hf-hero-card:hover { transform: translateY(-7px); }
-            .hf-hero-emerald:hover {
-              box-shadow: 0 18px 48px rgba(52,211,153,0.28), 0 4px 12px rgba(52,211,153,0.14), inset 0 1px 0 rgba(255,255,255,0.09);
-              border-color: rgba(52,211,153,0.35);
-            }
-            .hf-hero-cyan:hover {
-              box-shadow: 0 18px 48px rgba(34,211,238,0.28), 0 4px 12px rgba(34,211,238,0.14), inset 0 1px 0 rgba(255,255,255,0.09);
-              border-color: rgba(34,211,238,0.35);
-            }
-            .hf-hero-yellow:hover {
-              box-shadow: 0 18px 48px rgba(253,224,71,0.22), 0 4px 12px rgba(253,224,71,0.12), inset 0 1px 0 rgba(255,255,255,0.09);
-              border-color: rgba(253,224,71,0.32);
-            }
           `}</style>
-
-          <div className="grid gap-3 sm:grid-cols-3">
-            {[
-              { label: 'Tracked Masters', value: topMasters.length, icon: Crown, card: 'hf-hero-emerald', iconClass: 'text-emerald-300 bg-emerald-400/10' },
-              { label: 'Total Followers', value: topMasters.reduce((sum, m) => sum + toNumber(m.subscriber_count), 0), icon: Users, card: 'hf-hero-cyan', iconClass: 'text-cyan-300 bg-cyan-400/10' },
-              { label: 'Live Signals', value: topMasters.reduce((sum, m) => sum + toNumber(m.signal_count), 0), icon: Zap, card: 'hf-hero-yellow', iconClass: 'text-yellow-300 bg-yellow-400/10' },
-            ].map(({ label, value, icon: Icon, card, iconClass }) => (
-              <div key={label} className={`hf-hero-card ${card}`}>
-                <div className={`inline-flex rounded-xl p-2 ${iconClass}`}>
-                  <Icon className="h-5 w-5" />
-                </div>
-                <p className="mt-3 text-2xl font-bold text-white">{value.toLocaleString()}</p>
-                <p className="mt-1 text-xs uppercase tracking-widest text-slate-400">{label}</p>
-              </div>
-            ))}
-          </div>
         </section>
 
         {/* PLATFORM STATS */}
@@ -771,27 +736,108 @@ export default function LandingPage() {
           </section>
         )}
 
+        <section className="mt-14">
+          <div className="relative mb-5">
+            <div className="w-full text-center">
+              <h2 className="text-2xl font-bold text-white md:text-3xl">Top 10 Most Followed Masters</h2>
+            </div>
+            <div className="absolute right-0 top-1/2 hidden -translate-y-1/2 items-center gap-2 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 md:flex">
+              <BarChart3 className="h-4 w-4 text-emerald-300" />
+              Live leaderboard
+            </div>
+          </div>
+
+          {loading ? (
+            <p className="text-sm text-slate-400">Loading masters...</p>
+          ) : loadError ? (
+            <p className="text-sm text-red-400">{loadError}</p>
+          ) : topMasters.length === 0 ? (
+            <p className="text-sm text-slate-400">No active masters available yet.</p>
+          ) : (
+            <StackedMasters masters={topMasters} performanceByMaster={performanceByMaster} />
+          )}
+        </section>
+
         {/* HOW IT WORKS */}
         <section className="mt-16">
           <div className="mb-10 text-center">
             <h2 className="text-2xl font-bold text-white md:text-3xl">How it works</h2>
             <p className="mt-2 text-sm text-slate-400">Up and running in under 5 minutes.</p>
           </div>
+          <style>{`
+            .hf-how-card {
+              position: relative;
+              border-radius: 1.35rem;
+              border: 1px solid rgba(148, 163, 184, 0.22);
+              background: linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.82) 100%);
+              box-shadow: 0 12px 34px rgba(2, 6, 23, 0.44);
+              overflow: hidden;
+              transition: transform 260ms ease, box-shadow 260ms ease, border-color 260ms ease;
+            }
+            .hf-how-card::before {
+              content: "";
+              position: absolute;
+              inset: 0;
+              background:
+                radial-gradient(220px 80px at 10% -10%, var(--hf-glow), transparent 72%);
+              opacity: 0.65;
+              pointer-events: none;
+            }
+            .hf-how-card::after {
+              content: "";
+              position: absolute;
+              inset: 0 auto auto 0;
+              width: 100%;
+              height: 3px;
+              background: linear-gradient(90deg, var(--hf-line), transparent 78%);
+              opacity: 0.9;
+            }
+            .hf-how-card:hover {
+              transform: translateY(-8px);
+              border-color: rgba(148, 163, 184, 0.38);
+              box-shadow: 0 18px 44px rgba(2, 6, 23, 0.55);
+            }
+            .hf-how-connector {
+              position: absolute;
+              top: 50%;
+              right: -26px;
+              width: 52px;
+              height: 2px;
+              background: linear-gradient(90deg, rgba(148,163,184,0.45), rgba(148,163,184,0));
+              transform: translateY(-50%);
+              pointer-events: none;
+            }
+          `}</style>
           <div className="grid gap-6 md:grid-cols-3">
             {[
-              { step: '01', title: 'Create your account', desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal - no coding required.', dot: 'bg-emerald-400' },
-              { step: '02', title: 'Follow a master trader', desc: 'Browse the leaderboard, review real verified performance, and subscribe to a tier that fits your risk appetite.', dot: 'bg-cyan-400' },
-              { step: '03', title: 'Trades copy automatically', desc: 'Every signal is mirrored to your broker in real-time - zero manual input, full transparency.', dot: 'bg-purple-400' },
-            ].map(({ step, title, desc, dot }) => (
+              { step: '01', title: 'Create your account', desc: 'Register in seconds. Install the MT5 Expert Advisor on your broker terminal - no coding required.', dot: 'bg-emerald-400', line: 'rgba(52,211,153,0.9)', glow: 'rgba(52,211,153,0.22)' },
+              { step: '02', title: 'Follow a master trader', desc: 'Browse the leaderboard, review real verified performance, and subscribe to a tier that fits your risk appetite.', dot: 'bg-cyan-400', line: 'rgba(34,211,238,0.9)', glow: 'rgba(34,211,238,0.2)' },
+              { step: '03', title: 'Trades copy automatically', desc: 'Every signal is mirrored to your broker in real-time - zero manual input, full transparency.', dot: 'bg-purple-400', line: 'rgba(192,132,252,0.9)', glow: 'rgba(192,132,252,0.2)' },
+            ].map(({ step, title, desc, dot, line, glow }, idx) => (
               <div
                 key={step}
-                className="relative rounded-3xl p-6 transition-transform duration-300 hover:-translate-y-1.5"
-                style={{ background: '#111827', boxShadow: '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.08)' }}
+                className="hf-how-card p-6"
+                style={{ '--hf-line': line, '--hf-glow': glow } as React.CSSProperties}
               >
-                <div className={`mb-5 h-8 w-8 rounded-full ${dot} shadow-lg`} />
-                <p className="mb-2 text-6xl font-black" style={{ color: 'rgba(255,255,255,0.04)' }}>{step}</p>
-                <h3 className="text-base font-semibold text-white">{title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-slate-400">{desc}</p>
+                <div className="relative z-10">
+                  <div className="mb-5 flex items-center justify-between">
+                    <div className={`inline-flex h-10 w-10 items-center justify-center rounded-xl ${dot} shadow-[0_8px_20px_rgba(2,6,23,0.4)] ring-1 ring-white/15`}>
+                      {idx === 0 ? (
+                        <UserPlus className="h-5 w-5 text-slate-950" />
+                      ) : idx === 1 ? (
+                        <Crown className="h-5 w-5 text-slate-950" />
+                      ) : (
+                        <Bot className="h-5 w-5 text-slate-950" />
+                      )}
+                    </div>
+                    <span className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold tracking-wider text-slate-300">
+                      STEP {step}
+                    </span>
+                  </div>
+                  <h3 className="text-lg font-semibold text-white">{title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-300">{desc}</p>
+                </div>
+                {idx < 2 && <span className="hf-how-connector hidden md:block" />}
               </div>
             ))}
           </div>
@@ -993,6 +1039,56 @@ export default function LandingPage() {
             <h2 className="text-2xl font-bold text-white md:text-3xl">Why choose HF Copy Trader?</h2>
             <p className="mt-2 text-sm text-slate-400">Built for speed, transparency, and control.</p>
           </div>
+          <style>{`
+            .hf-why-tilt-base {
+              border-radius: 1rem;
+              background: linear-gradient(180deg, rgba(17,24,39,0.98) 0%, rgba(15,23,42,0.96) 100%);
+              border: 1px solid rgba(148,163,184,0.14);
+              box-shadow: 15px 15px 30px rgba(2, 6, 23, 0.72), -15px -15px 30px rgba(30, 41, 59, 0.62);
+              transition: box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease;
+              cursor: default;
+            }
+            .hf-why-tilt-base:hover {
+              border-color: rgba(148,163,184,0.3);
+            }
+            .hf-why-stat-card {
+              padding: 1rem;
+            }
+            .hf-why-emerald:hover {
+              background: linear-gradient(180deg, rgba(16, 31, 39, 0.98) 0%, rgba(15,23,42,0.96) 100%);
+              box-shadow: 0 18px 48px rgba(52,211,153,0.28), 0 4px 12px rgba(52,211,153,0.14), 15px 15px 30px rgba(2, 6, 23, 0.72), -15px -15px 30px rgba(30, 41, 59, 0.62);
+              border-color: rgba(52,211,153,0.35);
+            }
+            .hf-why-cyan:hover {
+              background: linear-gradient(180deg, rgba(14, 31, 41, 0.98) 0%, rgba(15,23,42,0.96) 100%);
+              box-shadow: 0 18px 48px rgba(34,211,238,0.28), 0 4px 12px rgba(34,211,238,0.14), 15px 15px 30px rgba(2, 6, 23, 0.72), -15px -15px 30px rgba(30, 41, 59, 0.62);
+              border-color: rgba(34,211,238,0.35);
+            }
+            .hf-why-yellow:hover {
+              background: linear-gradient(180deg, rgba(41, 35, 14, 0.98) 0%, rgba(15,23,42,0.96) 100%);
+              box-shadow: 0 18px 48px rgba(253,224,71,0.22), 0 4px 12px rgba(253,224,71,0.12), 15px 15px 30px rgba(2, 6, 23, 0.72), -15px -15px 30px rgba(30, 41, 59, 0.62);
+              border-color: rgba(253,224,71,0.32);
+            }
+            .hf-why-feature-card {
+              padding: 1rem;
+            }
+          `}</style>
+          <div className="mb-4 grid gap-3 sm:grid-cols-3">
+            {[
+              { label: 'Tracked Masters', value: topMasters.length, helper: 'Verified strategy providers', icon: Crown, card: 'hf-why-emerald', iconClass: 'text-emerald-300 bg-emerald-400/10' },
+              { label: 'Total Followers', value: topMasters.reduce((sum, m) => sum + toNumber(m.subscriber_count), 0), helper: 'Accounts actively mirroring', icon: Users, card: 'hf-why-cyan', iconClass: 'text-cyan-300 bg-cyan-400/10' },
+              { label: 'Live Signals', value: topMasters.reduce((sum, m) => sum + toNumber(m.signal_count), 0), helper: 'Realtime trade events delivered', icon: Zap, card: 'hf-why-yellow', iconClass: 'text-yellow-300 bg-yellow-400/10' },
+            ].map(({ label, value, helper, icon: Icon, card, iconClass }) => (
+              <TiltCard key={label} className={`hf-why-tilt-base hf-why-stat-card ${card}`} withGlow>
+                <div className={`inline-flex rounded-xl p-2 ${iconClass}`}>
+                  <Icon className="h-5 w-5" />
+                </div>
+                <p className="mt-3 text-2xl font-bold text-white">{value.toLocaleString()}</p>
+                <p className="mt-1 text-xs uppercase tracking-widest text-slate-400">{label}</p>
+                <p className="mt-1 text-[11px] text-slate-500">{helper}</p>
+              </TiltCard>
+            ))}
+          </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[
               { icon: Zap, title: 'Sub-millisecond signals', desc: 'Protocol Buffer binary encoding over WebSocket delivers trades faster than any REST-based alternative.', iconColor: 'text-yellow-300', iconBg: 'bg-yellow-400/10' },
@@ -1001,16 +1097,13 @@ export default function LandingPage() {
               { icon: Globe, title: 'Multi-broker support', desc: 'Works with any MT5 broker worldwide. Automatic symbol suffix detection handles broker-specific naming.', iconColor: 'text-blue-300', iconBg: 'bg-blue-400/10' },
               { icon: Server, title: 'Built to scale', desc: 'PM2 cluster mode, Redis pub/sub, and Nginx sharding handle thousands of simultaneous connections.', iconColor: 'text-purple-300', iconBg: 'bg-purple-400/10' },
               { icon: Lock, title: 'Secure by default', desc: 'Per-master API keys, JWT httpOnly cookies, bcrypt hashing, and role-based access control throughout.', iconColor: 'text-rose-300', iconBg: 'bg-rose-400/10' },
-            ].map(({ icon: Icon, title, desc, iconColor, iconBg }) => (
+            ].map(({ icon: Icon, title, desc, iconColor, iconBg }, idx) => (
               <TiltCard
                 key={title}
-                className="rounded-[30px] p-5"
+                className={`hf-why-tilt-base hf-why-feature-card ${
+                  idx % 3 === 0 ? 'hf-why-emerald' : idx % 3 === 1 ? 'hf-why-cyan' : 'hf-why-yellow'
+                }`}
                 withGlow
-                style={{
-                  background: '#111827',
-                  boxShadow: '15px 15px 30px rgba(2, 6, 23, 0.72), -15px -15px 30px rgba(30, 41, 59, 0.62)',
-                  border: '1px solid rgba(148, 163, 184, 0.14)',
-                }}
               >
                 <div className={`mb-3 inline-flex rounded-xl p-2.5 ${iconBg}`}>
                   <Icon className={`h-5 w-5 ${iconColor}`} />
@@ -1178,30 +1271,6 @@ export default function LandingPage() {
           )}
         </section>
 
-        <section className="mt-14">
-          <div className="relative mb-5">
-            <div className="w-full text-center">
-              <h2 className="text-2xl font-bold text-white md:text-3xl">Top 10 Most Followed Masters</h2>
-            </div>
-            <div className="absolute right-0 top-1/2 hidden -translate-y-1/2 items-center gap-2 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 md:flex">
-              <BarChart3 className="h-4 w-4 text-emerald-300" />
-              Live leaderboard
-            </div>
-          </div>
-
-          {loading ? (
-            <p className="text-sm text-slate-400">Loading masters...</p>
-          ) : loadError ? (
-            <p className="text-sm text-red-400">{loadError}</p>
-          ) : topMasters.length === 0 ? (
-            <p className="text-sm text-slate-400">No active masters available yet.</p>
-          ) : (
-            <>
-              <StackedMasters masters={topMasters} performanceByMaster={performanceByMaster} />
-            </>
-          )}
-        </section>
-
         {/* FAQ */}
         <section className="mt-16">
           <div className="mb-8 text-center">
@@ -1270,8 +1339,8 @@ export default function LandingPage() {
       </div>
 
       {/* JOIN POP OUT FEED */}
-      {joinToasts.length > 0 && (
-        <div className="pointer-events-none fixed bottom-5 right-4 z-50 flex w-[min(92vw,360px)] flex-col gap-2 [perspective:900px]">
+      {joinToast && (
+        <div className="pointer-events-none fixed bottom-5 right-4 z-50 flex w-[min(92vw,360px)] flex-col gap-2">
           <style>{`
             @keyframes join-pop-in {
               0% { opacity: 0; filter: blur(1.2px); }
@@ -1282,36 +1351,24 @@ export default function LandingPage() {
               100% { opacity: 0; transform: translateY(-18px); filter: blur(2px); }
             }
             .join-pop-card {
-              transform-origin: center bottom;
-              transition: transform 760ms cubic-bezier(0.16, 1, 0.3, 1);
-              will-change: transform, opacity, filter;
-              backface-visibility: hidden;
+              will-change: opacity, filter;
             }
             .join-pop-card.is-leaving {
               animation: join-pop-out 760ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
             }
             .join-pop-card .join-pop-inner {
-              opacity: calc(1 - (var(--stack-depth, 0) * 0.08));
-              filter: saturate(calc(1 - (var(--stack-depth, 0) * 0.08)));
-              transition: opacity 560ms cubic-bezier(0.16, 1, 0.3, 1), filter 560ms cubic-bezier(0.16, 1, 0.3, 1);
               animation: join-pop-in 920ms cubic-bezier(0.16, 1, 0.3, 1);
             }
           `}</style>
-          {joinToasts.map((item, idx) => {
-            const depth = Math.max(0, joinToasts.length - idx - 1);
-            return (
-              <div
-              key={item.id}
-              className={`join-pop-card rounded-xl bg-slate-900/90 px-3 py-2 text-xs text-slate-200 backdrop-blur-sm ${item.leaving ? 'is-leaving' : ''}`}
-              style={{ transform: `translateY(-${depth * 12}px) rotateX(${depth * 12}deg)` }}
-            >
-              <span className="join-pop-inner inline-flex items-center gap-2" style={{ ['--stack-depth' as '--stack-depth']: depth }}>
-                <span className="h-2 w-2 rounded-full bg-emerald-400/95" />
-                {item.text}
-              </span>
-              </div>
-            );
-          })}
+          <div
+            key={joinToast.id}
+            className={`join-pop-card rounded-xl bg-slate-900/90 px-3 py-2 text-xs text-slate-200 backdrop-blur-sm ${joinToast.leaving ? 'is-leaving' : ''}`}
+          >
+            <span className="join-pop-inner inline-flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-emerald-400/95" />
+              {joinToast.text}
+            </span>
+          </div>
         </div>
       )}
 
