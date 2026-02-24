@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { API } from '@/lib/api';
-import { Crown, Users, BarChart3, Zap, CheckCircle2, ArrowRight, Sparkles, Shield, TrendingUp, Globe, Lock, ChevronDown, Server, X, UserPlus, Bot } from 'lucide-react';
+import { Crown, Users, BarChart3, Zap, CheckCircle2, ArrowRight, Shield, TrendingUp, Globe, Lock, ChevronDown, Server, X, UserPlus, Bot } from 'lucide-react';
 
 interface SubscriptionTier {
   id: number;
@@ -356,11 +356,21 @@ function StackedMasters({
 }
 
 export default function LandingPage() {
+  const TRADE_CARD_LANDSCAPE_WIDTH = 940;
+  const TRADE_CARD_LANDSCAPE_HEIGHT = 450;
+  const TRADE_CARD_PORTRAIT_WIDTH = 420;
+  const TRADE_CARD_PORTRAIT_HEIGHT = 720;
   const [tiers, setTiers] = useState<SubscriptionTier[]>([]);
   const [masters, setMasters] = useState<LeaderboardMaster[]>([]);
   const [performanceByMaster, setPerformanceByMaster] = useState<Record<number, PerformanceSeriesPoint[]>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const tradeNetworkShellRef = useRef<HTMLDivElement>(null);
+  const tradeNetworkRef = useRef<HTMLDivElement>(null);
+  const [tradeCardScale, setTradeCardScale] = useState(0.72);
+  const [isMobileOSDevice, setIsMobileOSDevice] = useState(false);
+  const tradeCardBaseWidth = isMobileOSDevice ? TRADE_CARD_PORTRAIT_WIDTH : TRADE_CARD_LANDSCAPE_WIDTH;
+  const tradeCardBaseHeight = isMobileOSDevice ? TRADE_CARD_PORTRAIT_HEIGHT : TRADE_CARD_LANDSCAPE_HEIGHT;
 
   useEffect(() => {
     let cancelled = false;
@@ -455,6 +465,7 @@ export default function LandingPage() {
   const joinToastRef = useRef<{ id: number; text: string; leaving?: boolean } | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const lastChimeAtRef = useRef(0);
+  const lastCopyChimeAtRef = useRef(0);
 
   const ensureAudioContext = () => {
     if (typeof window === 'undefined') return null;
@@ -538,6 +549,55 @@ export default function LandingPage() {
     noteB.stop(t0 + 0.6);
   };
 
+  const playCopyArrivalChime = () => {
+    if (typeof window === 'undefined') return;
+    const nowMs = Date.now();
+    if (nowMs - lastCopyChimeAtRef.current < 220) return;
+    lastCopyChimeAtRef.current = nowMs;
+
+    const ctx = ensureAudioContext();
+    if (!ctx) return;
+    if (ctx.state !== 'running') {
+      ctx.resume().catch(() => {});
+      return;
+    }
+
+    const t0 = ctx.currentTime + 0.005;
+    const gain = ctx.createGain();
+    const echo = ctx.createDelay(0.25);
+    const echoGain = ctx.createGain();
+    const highpass = ctx.createBiquadFilter();
+
+    highpass.type = 'highpass';
+    highpass.frequency.setValueAtTime(380, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(0.0135, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.28);
+
+    echo.delayTime.setValueAtTime(0.11, t0);
+    echoGain.gain.setValueAtTime(0.18, t0);
+
+    const osc = ctx.createOscillator();
+    const oscGain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(900, t0);
+    osc.frequency.exponentialRampToValueAtTime(660, t0 + 0.2);
+    oscGain.gain.setValueAtTime(0.0001, t0);
+    oscGain.gain.linearRampToValueAtTime(1, t0 + 0.015);
+    oscGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.24);
+
+    osc.connect(oscGain);
+    oscGain.connect(gain);
+    gain.connect(highpass);
+    highpass.connect(ctx.destination);
+    highpass.connect(echo);
+    echo.connect(echoGain);
+    echoGain.connect(ctx.destination);
+
+    osc.start(t0);
+    osc.stop(t0 + 0.26);
+  };
+
   useEffect(() => {
     joinToastRef.current = joinToast;
   }, [joinToast]);
@@ -577,6 +637,40 @@ export default function LandingPage() {
   }, [joinSeedItems]);
 
   useEffect(() => {
+    const cycleMs = 2600;
+    const bumpPeakAtMs = Math.round(cycleMs * 0.9);
+    const followers = Array.from(
+      document.querySelectorAll<HTMLElement>('.hf-desktop-f1, .hf-desktop-f2, .hf-desktop-f3')
+    );
+    const pending = new Set<number>();
+
+    const scheduleAtBumpPeak = () => {
+      const id = window.setTimeout(() => {
+        pending.delete(id);
+        playCopyArrivalChime();
+      }, bumpPeakAtMs);
+      pending.add(id);
+    };
+
+    const onAnimStart = () => scheduleAtBumpPeak();
+    const onAnimIteration = () => scheduleAtBumpPeak();
+
+    followers.forEach((el) => {
+      el.addEventListener('animationstart', onAnimStart);
+      el.addEventListener('animationiteration', onAnimIteration);
+    });
+
+    return () => {
+      followers.forEach((el) => {
+        el.removeEventListener('animationstart', onAnimStart);
+        el.removeEventListener('animationiteration', onAnimIteration);
+      });
+      pending.forEach((id) => window.clearTimeout(id));
+      pending.clear();
+    };
+  }, []);
+
+  useEffect(() => {
     const unlock = () => {
       const ctx = ensureAudioContext();
       if (!ctx) return;
@@ -607,6 +701,95 @@ export default function LandingPage() {
     };
   }, []);
 
+  useEffect(() => {
+    const shell = tradeNetworkShellRef.current;
+    if (!shell || typeof ResizeObserver === 'undefined') return;
+
+    const recompute = (width: number) => {
+      const viewport = window.innerWidth;
+      const usableWidth = Math.max(0, width - 10);
+      const raw = usableWidth / tradeCardBaseWidth;
+
+      // Continuous scaling with dedicated caps by device class.
+      let maxScale = 0.56; // mobile
+      if (viewport >= 640 && viewport < 1024) maxScale = 0.84; // tablet
+      if (viewport >= 1024) {
+        maxScale =
+          viewport >= 1536 ? 1.18 :
+          viewport >= 1280 ? 1.08 :
+          0.98; // desktop
+      }
+
+      const minVisibleScale = 0.28;
+      const next = Math.max(minVisibleScale, Math.min(maxScale, raw));
+      setTradeCardScale(next);
+    };
+
+    recompute(shell.clientWidth);
+    const ro = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect?.width;
+      if (next) recompute(next);
+    });
+    ro.observe(shell);
+
+    const onResize = () => recompute(shell.clientWidth);
+    window.addEventListener('resize', onResize);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', onResize);
+    };
+  }, [tradeCardBaseWidth]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const ua = window.navigator.userAgent || '';
+    const isMobileOS = /Android|iPhone|iPad|iPod/i.test(ua);
+    setIsMobileOSDevice(isMobileOS);
+  }, []);
+
+  const handleTradeNetworkMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = tradeNetworkRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width;
+    const py = (e.clientY - rect.top) / rect.height;
+    const x = px - 0.5;
+    const y = py - 0.5;
+    const rx = `${(-y * 16).toFixed(2)}deg`;
+    const ry = `${(x * 18).toFixed(2)}deg`;
+    const scale = `${(1.02 + Math.min(0.03, Math.sqrt(x * x + y * y) * 0.03)).toFixed(4)}`;
+
+    el.style.setProperty('--hf-tilt-rx', rx);
+    el.style.setProperty('--hf-tilt-ry', ry);
+    el.style.setProperty('--hf-tilt-scale', scale);
+    el.style.setProperty('--hf-tilt-glow-x', `${(px * 100).toFixed(2)}%`);
+    el.style.setProperty('--hf-tilt-glow-y', `${(py * 100).toFixed(2)}%`);
+    el.style.setProperty('--hf-tilt-glow-opacity', '0.55');
+  };
+
+  const resetTradeNetworkTilt = () => {
+    const el = tradeNetworkRef.current;
+    if (!el) return;
+    el.style.setProperty('--hf-tilt-rx', '0deg');
+    el.style.setProperty('--hf-tilt-ry', '0deg');
+    el.style.setProperty('--hf-tilt-scale', '1');
+    el.style.setProperty('--hf-tilt-glow-opacity', '0');
+  };
+
+  const laneConfig = isMobileOSDevice
+    ? {
+        viewBox: '0 0 300 520',
+        top: 'M 150 66 C 190 120, 230 185, 250 250',
+        mid: 'M 150 66 L 150 368',
+        low: 'M 150 66 C 112 130, 70 208, 50 446',
+      }
+    : {
+        viewBox: '0 0 540 260',
+        top: 'M 0 138 C 140 138, 310 120, 540 20',
+        mid: 'M 0 138 L 540 138',
+        low: 'M 0 138 C 140 138, 310 156, 540 256',
+      };
+
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-slate-950 text-slate-100">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -630,12 +813,8 @@ export default function LandingPage() {
       </div>
 
       <div className="relative z-10 mx-auto w-full px-4 py-10 sm:px-6 md:py-14 lg:w-[85%] lg:px-0">
-        <section className="grid gap-8 md:grid-cols-2 md:items-center">
+        <section className="grid gap-8 xl:grid-cols-[minmax(0,0.74fr)_minmax(0,1.26fr)] xl:items-center">
           <div>
-            <div className="hf-text-behavior mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs uppercase tracking-wider text-emerald-300">
-              <Sparkles className="h-3.5 w-3.5" />
-              Live Copy Trading Platform
-            </div>
             <h1 className="text-4xl font-bold leading-tight text-white md:text-5xl">
               <span className="hf-text-behavior hf-text-inline block w-fit">Follow top-performing masters.</span>
               <span className="hf-text-behavior hf-text-inline block w-fit bg-gradient-to-r from-emerald-300 to-cyan-300 bg-clip-text text-transparent">
@@ -667,6 +846,96 @@ export default function LandingPage() {
             </p>
           </div>
 
+          <div className="relative flex min-h-[240px] items-center justify-center sm:min-h-[280px] md:min-h-[360px] lg:min-h-[450px]">
+            <div
+              ref={tradeNetworkShellRef}
+              className="hf-trade-network-shell"
+              style={{ height: `${tradeCardBaseHeight * tradeCardScale + 28}px` }}
+            >
+              <div className="hf-trade-motion">
+                <div
+                  className="hf-trade-network-scale"
+                  style={{
+                    width: `${tradeCardBaseWidth}px`,
+                    height: `${tradeCardBaseHeight}px`,
+                    transform: `scale(${tradeCardScale})`,
+                  }}
+                >
+                  <div
+                    ref={tradeNetworkRef}
+                    className={`hf-trade-network ${isMobileOSDevice ? 'is-mobile-portrait' : ''}`}
+                    onMouseMove={handleTradeNetworkMove}
+                    onMouseLeave={resetTradeNetworkTilt}
+                  >
+                    <div className="hf-trade-tilt-glow" aria-hidden="true" />
+              <div className="hf-trade-network-grid" />
+              <div className="hf-trade-title">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/85">Trade Replication</p>
+                <p className="mt-1 text-xs text-slate-300">Master desktop publishes to follower desktops</p>
+              </div>
+
+              <div className="hf-desktop hf-desktop-master">
+                <div className="hf-desktop-screen">
+                  <div className="hf-master-header">
+                    <span className="hf-ea-icon">EA</span>
+                    <span className="hf-master-software">Software</span>
+                  </div>
+                  <div className="hf-screen-chart hf-master-chart">
+                    <span className="hf-candle-bar hf-master-bar" style={{ height: '10px', animationDelay: '0s' }} />
+                    <span className="hf-candle-bar hf-master-bar" style={{ height: '16px', animationDelay: '0.12s' }} />
+                    <span className="hf-candle-bar hf-master-bar" style={{ height: '12px', animationDelay: '0.24s' }} />
+                    <span className="hf-candle-bar hf-master-bar" style={{ height: '20px', animationDelay: '0.36s' }} />
+                    <span className="hf-candle-bar hf-master-bar" style={{ height: '15px', animationDelay: '0.48s' }} />
+                  </div>
+                  <p className="hf-master-sending">Sending trade...</p>
+                </div>
+                <div className="hf-desktop-stand" />
+                <div className="hf-desktop-base" />
+              </div>
+
+              <div className="hf-trade-lanes">
+                <svg className="hf-trade-lanes-svg" viewBox={laneConfig.viewBox} preserveAspectRatio="none" aria-hidden="true">
+                  <path className="hf-lane-stroke" d={laneConfig.top} />
+                  <path className="hf-lane-stroke" d={laneConfig.mid} />
+                  <path className="hf-lane-stroke" d={laneConfig.low} />
+                </svg>
+                <span className="hf-lane-dot hf-lane-dot-top" style={{ offsetPath: `path('${laneConfig.top}')` }} />
+                <span className="hf-lane-dot hf-lane-dot-mid" style={{ offsetPath: `path('${laneConfig.mid}')` }} />
+                <span className="hf-lane-dot hf-lane-dot-low" style={{ offsetPath: `path('${laneConfig.low}')` }} />
+              </div>
+
+              <div className="hf-desktop hf-desktop-f1">
+                <div className="hf-desktop-screen">
+                  <p className="hf-screen-label">Desktop / VPS</p>
+                  <p className="hf-screen-copy hf-copy-ack hf-copy-ack-f1 text-emerald-300">Copied</p>
+                </div>
+                <div className="hf-desktop-stand" />
+                <div className="hf-desktop-base" />
+              </div>
+
+              <div className="hf-desktop hf-desktop-f2">
+                <div className="hf-desktop-screen">
+                  <p className="hf-screen-label">Desktop / VPS</p>
+                  <p className="hf-screen-copy hf-copy-ack hf-copy-ack-f2 text-cyan-300">Copied</p>
+                </div>
+                <div className="hf-desktop-stand" />
+                <div className="hf-desktop-base" />
+              </div>
+
+              <div className="hf-desktop hf-desktop-f3">
+                <div className="hf-desktop-screen">
+                  <p className="hf-screen-label">Desktop / VPS</p>
+                  <p className="hf-screen-copy hf-copy-ack hf-copy-ack-f3 text-violet-300">Copied</p>
+                </div>
+                <div className="hf-desktop-stand" />
+                <div className="hf-desktop-base" />
+              </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <style>{`
             .hf-text-behavior {
               transition: all 0.3s ease-out;
@@ -686,6 +955,395 @@ export default function LandingPage() {
             .hf-text-block {
               display: inline-block;
               padding: 2px 2px;
+            }
+            .hf-trade-network-shell {
+              width: 100%;
+              max-width: 1100px;
+              display: flex;
+              justify-content: center;
+              overflow: hidden;
+            }
+            .hf-trade-motion {
+              width: 100%;
+              display: flex;
+              justify-content: center;
+              animation: hf-network-float 4.8s ease-in-out infinite;
+              will-change: transform;
+            }
+            .hf-trade-network-scale {
+              transform-origin: top center;
+              will-change: transform;
+            }
+            .hf-trade-network {
+              --hf-tilt-rx: 0deg;
+              --hf-tilt-ry: 0deg;
+              --hf-tilt-scale: 1;
+              --hf-tilt-glow-x: 50%;
+              --hf-tilt-glow-y: 50%;
+              --hf-tilt-glow-opacity: 0;
+              position: relative;
+              width: 940px;
+              height: 450px;
+              border-radius: 24px;
+              border: 1px solid rgba(148, 163, 184, 0.16);
+              background:
+                radial-gradient(110% 85% at 16% 12%, rgba(34,211,238,0.18), transparent 45%),
+                radial-gradient(92% 72% at 84% 88%, rgba(52,211,153,0.16), transparent 52%),
+                linear-gradient(160deg, rgba(15,23,42,0.94), rgba(2,6,23,0.9));
+              box-shadow:
+                0 66px 110px rgba(2,6,23,0.72),
+                0 30px 52px rgba(15,23,42,0.58),
+                0 10px 24px rgba(2,6,23,0.44),
+                0 0 28px rgba(34, 211, 238, 0.18),
+                inset 0 1px 0 rgba(255,255,255,0.1),
+                inset 0 -1px 0 rgba(148, 163, 184, 0.22);
+              overflow: hidden;
+              transform:
+                perspective(1400px)
+                rotateX(var(--hf-tilt-rx))
+                rotateY(var(--hf-tilt-ry))
+                scale3d(var(--hf-tilt-scale), var(--hf-tilt-scale), var(--hf-tilt-scale));
+              transition: transform 90ms ease-out, box-shadow 220ms ease;
+              will-change: transform;
+            }
+            .hf-trade-network.is-mobile-portrait {
+              width: 420px;
+              height: 720px;
+            }
+            .hf-trade-network:hover {
+              box-shadow:
+                0 82px 126px rgba(2,6,23,0.78),
+                0 36px 62px rgba(15,23,42,0.62),
+                0 14px 32px rgba(2,6,23,0.48),
+                0 0 44px rgba(34, 211, 238, 0.28),
+                inset 0 1px 0 rgba(255,255,255,0.14),
+                inset 0 -1px 0 rgba(148, 163, 184, 0.26);
+            }
+            .hf-trade-tilt-glow {
+              position: absolute;
+              inset: 0;
+              z-index: 1;
+              pointer-events: none;
+              border-radius: inherit;
+              background:
+                radial-gradient(
+                  360px circle at var(--hf-tilt-glow-x) var(--hf-tilt-glow-y),
+                  rgba(56, 189, 248, 0.35),
+                  rgba(16, 185, 129, 0.24) 36%,
+                  rgba(2, 6, 23, 0) 70%
+                );
+              opacity: var(--hf-tilt-glow-opacity);
+              transition: opacity 120ms ease-out;
+            }
+            .hf-trade-network::before {
+              content: "";
+              position: absolute;
+              inset: -18px 18px auto 18px;
+              height: 72px;
+              border-radius: 999px;
+              background: radial-gradient(circle at center, rgba(56,189,248,0.32), transparent 72%);
+              filter: blur(18px);
+              opacity: 0.55;
+              pointer-events: none;
+            }
+            .hf-trade-network::after {
+              content: "";
+              position: absolute;
+              left: 6%;
+              right: 6%;
+              bottom: -34px;
+              height: 56px;
+              border-radius: 999px;
+              background: radial-gradient(ellipse at center, rgba(2,6,23,0.75), rgba(2,6,23,0));
+              filter: blur(14px);
+              pointer-events: none;
+            }
+            .hf-trade-network-grid {
+              position: absolute;
+              inset: 0;
+              opacity: 0.2;
+              background-image:
+                linear-gradient(rgba(148,163,184,0.15) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(148,163,184,0.15) 1px, transparent 1px);
+              background-size: 26px 26px;
+            }
+            .hf-trade-title {
+              position: absolute;
+              left: 18px;
+              top: 14px;
+              z-index: 4;
+            }
+            .hf-desktop {
+              position: absolute;
+              z-index: 3;
+              width: 164px;
+              transform-style: preserve-3d;
+              filter: drop-shadow(0 14px 24px rgba(2, 6, 23, 0.55));
+            }
+            .hf-desktop-master {
+              left: 38px;
+              top: 168px;
+              animation: hf-master-pulse 2.6s ease-in-out infinite;
+            }
+            .hf-desktop-f1 {
+              right: 30px;
+              top: 64px;
+              animation: hf-follower-bump 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+              animation-delay: 0s;
+            }
+            .hf-desktop-f2 {
+              right: 30px;
+              top: 182px;
+              animation: hf-follower-bump 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+              animation-delay: 0.6s;
+            }
+            .hf-desktop-f3 {
+              right: 30px;
+              top: 300px;
+              animation: hf-follower-bump 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+              animation-delay: 1.2s;
+            }
+            .hf-trade-network.is-mobile-portrait .hf-desktop {
+              width: 150px;
+            }
+            .hf-trade-network.is-mobile-portrait .hf-desktop-master {
+              left: 136px;
+              top: 52px;
+            }
+            .hf-trade-network.is-mobile-portrait .hf-desktop-f1 {
+              left: 246px;
+              top: 250px;
+              right: auto;
+            }
+            .hf-trade-network.is-mobile-portrait .hf-desktop-f2 {
+              left: 136px;
+              top: 370px;
+              right: auto;
+            }
+            .hf-trade-network.is-mobile-portrait .hf-desktop-f3 {
+              left: 26px;
+              top: 490px;
+              right: auto;
+            }
+            .hf-desktop-screen {
+              border-radius: 12px;
+              border: 1px solid rgba(148,163,184,0.28);
+              background: linear-gradient(180deg, rgba(15,23,42,0.96), rgba(15,23,42,0.82));
+              box-shadow: 0 14px 28px rgba(2,6,23,0.46), inset 0 1px 0 rgba(255,255,255,0.07);
+              padding: 9px 10px;
+              min-height: 72px;
+              transform: rotateY(-12deg) rotateX(6deg);
+              transform-origin: left center;
+            }
+            .hf-desktop-master .hf-desktop-screen {
+              border-color: rgba(52,211,153,0.42);
+              box-shadow: 0 16px 32px rgba(16,185,129,0.2), inset 0 1px 0 rgba(255,255,255,0.08);
+            }
+            .hf-master-header {
+              display: flex;
+              align-items: center;
+              gap: 8px;
+            }
+            .hf-ea-icon {
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              width: 24px;
+              height: 24px;
+              border-radius: 7px;
+              border: 1px solid rgba(52, 211, 153, 0.45);
+              background: linear-gradient(180deg, rgba(52,211,153,0.2), rgba(34,211,238,0.16));
+              color: rgb(110 231 183);
+              font-size: 11px;
+              font-weight: 800;
+              letter-spacing: 0.04em;
+              box-shadow: 0 0 10px rgba(16,185,129,0.2);
+            }
+            .hf-master-software {
+              font-size: 10px;
+              color: rgb(148 163 184);
+              text-transform: uppercase;
+              letter-spacing: 0.08em;
+            }
+            .hf-screen-chart {
+              margin-top: 8px;
+              display: flex;
+              align-items: flex-end;
+              gap: 4px;
+            }
+            .hf-master-chart {
+              position: relative;
+              overflow: hidden;
+            }
+            .hf-candle-bar {
+              width: 7px;
+              border-radius: 3px 3px 2px 2px;
+              background: linear-gradient(180deg, rgba(52,211,153,0.95), rgba(34,211,238,0.85));
+              box-shadow: 0 0 10px rgba(52,211,153,0.25);
+            }
+            .hf-master-bar {
+              animation: hf-master-generate 1.4s ease-in-out infinite;
+            }
+            .hf-master-sending {
+              margin-top: 8px;
+              font-size: 10px;
+              color: rgb(110 231 183);
+              letter-spacing: 0.03em;
+              animation: hf-master-sending 1.4s ease-in-out infinite;
+            }
+            .hf-screen-label {
+              font-size: 10px;
+              color: rgb(148 163 184);
+              text-transform: uppercase;
+              letter-spacing: 0.08em;
+              text-align: center;
+            }
+            .hf-screen-copy {
+              margin-top: 8px;
+              font-size: 11px;
+              font-weight: 600;
+              text-align: center;
+            }
+            .hf-copy-ack {
+              transform-origin: center center;
+              animation: hf-copy-confirm 2.6s ease-in-out infinite;
+              opacity: 0.72;
+            }
+            .hf-copy-ack-f1 { animation-delay: 0s; }
+            .hf-copy-ack-f2 { animation-delay: 0.6s; }
+            .hf-copy-ack-f3 { animation-delay: 1.2s; }
+            .hf-desktop-stand {
+              margin: -1px auto 0;
+              width: 22px;
+              height: 11px;
+              background: linear-gradient(180deg, rgba(148,163,184,0.45), rgba(100,116,139,0.28));
+              border-radius: 0 0 6px 6px;
+            }
+            .hf-desktop-base {
+              margin: 0 auto;
+              width: 66px;
+              height: 7px;
+              border-radius: 999px;
+              background: linear-gradient(90deg, rgba(71,85,105,0.65), rgba(148,163,184,0.36), rgba(71,85,105,0.65));
+            }
+            .hf-trade-lanes {
+              position: absolute;
+              left: 206px;
+              top: 80px;
+              width: 540px;
+              height: 260px;
+              z-index: 2;
+              pointer-events: none;
+            }
+            .hf-trade-network.is-mobile-portrait .hf-trade-lanes {
+              left: 60px;
+              top: 90px;
+              width: 300px;
+              height: 520px;
+            }
+            .hf-trade-lanes-svg {
+              width: 100%;
+              height: 100%;
+              overflow: visible;
+            }
+            .hf-lane-stroke {
+              fill: none;
+              stroke: rgba(148, 163, 184, 0.75);
+              stroke-width: 1.2;
+              stroke-linecap: round;
+            }
+            .hf-lane-dot {
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 10px;
+              height: 10px;
+              border-radius: 999px;
+              background: radial-gradient(circle at 35% 35%, #ecfeff, #22d3ee 45%, #10b981 80%);
+              box-shadow: 0 0 14px rgba(34,211,238,0.6), 0 0 28px rgba(16,185,129,0.42);
+              animation: hf-trade-path 2.6s cubic-bezier(0.25, 0.1, 0.25, 1) infinite;
+              offset-rotate: 0deg;
+            }
+            .hf-lane-dot-top {
+              animation-delay: 0s;
+            }
+            .hf-lane-dot-mid {
+              animation-delay: 0.6s;
+            }
+            .hf-lane-dot-low {
+              animation-delay: 1.2s;
+            }
+            @keyframes hf-trade-path {
+              0% { offset-distance: 0%; opacity: 0; }
+              8% { opacity: 1; }
+              90% { offset-distance: 100%; opacity: 1; }
+              90.1% { opacity: 0; }
+              100% { offset-distance: 100%; opacity: 0; }
+            }
+            @keyframes hf-master-pulse {
+              0%, 100% {
+                transform: translateY(0);
+              }
+              12% {
+                transform: translateY(-1px);
+              }
+              20% {
+                transform: translateY(0);
+              }
+            }
+            @keyframes hf-network-float {
+              0%, 100% {
+                transform: translate3d(0, 0, 0);
+              }
+              25% {
+                transform: translate3d(5px, -8px, 0);
+              }
+              50% {
+                transform: translate3d(-2px, -14px, 0);
+              }
+              75% {
+                transform: translate3d(-6px, -7px, 0);
+              }
+            }
+            @keyframes hf-master-generate {
+              0%, 100% { transform: scaleY(0.82); opacity: 0.8; }
+              50% { transform: scaleY(1.18); opacity: 1; }
+            }
+            @keyframes hf-master-sending {
+              0%, 100% { opacity: 0.68; letter-spacing: 0.03em; }
+              50% { opacity: 1; letter-spacing: 0.06em; }
+            }
+            @keyframes hf-follower-bump {
+              0%, 83%, 100% {
+                transform: translateY(0) scale(1);
+                filter: drop-shadow(0 14px 24px rgba(2, 6, 23, 0.55));
+              }
+              90% {
+                transform: translateY(-4px) scale(1.03);
+                filter: drop-shadow(0 20px 34px rgba(16, 185, 129, 0.28));
+              }
+              96% {
+                transform: translateY(0) scale(1);
+                filter: drop-shadow(0 14px 24px rgba(2, 6, 23, 0.55));
+              }
+            }
+            @keyframes hf-copy-confirm {
+              0%, 83%, 100% {
+                opacity: 0.72;
+                transform: translateY(0) scale(1);
+                letter-spacing: 0.01em;
+                filter: brightness(1);
+              }
+              90% {
+                opacity: 1;
+                transform: translateY(-1px) scale(1.06);
+                letter-spacing: 0.04em;
+                filter: brightness(1.28) drop-shadow(0 0 8px rgba(52, 211, 153, 0.34));
+              }
+              95% {
+                opacity: 0.92;
+                transform: translateY(0) scale(1.01);
+              }
             }
           `}</style>
         </section>
@@ -739,11 +1397,11 @@ export default function LandingPage() {
         <section className="mt-14">
           <div className="relative mb-5">
             <div className="w-full text-center">
-              <h2 className="text-2xl font-bold text-white md:text-3xl">Top 10 Most Followed Masters</h2>
+              <h2 className="text-2xl font-bold text-white md:text-3xl">Verified and Most Followed Master</h2>
             </div>
             <div className="absolute right-0 top-1/2 hidden -translate-y-1/2 items-center gap-2 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 md:flex">
               <BarChart3 className="h-4 w-4 text-emerald-300" />
-              Live leaderboard
+              View Leader Board
             </div>
           </div>
 
@@ -1403,7 +2061,7 @@ export default function LandingPage() {
         </div>
         <div className="mx-auto flex w-full flex-col items-center justify-between gap-3 sm:px-2 md:flex-row lg:w-[85%] lg:px-0">
           <div className="inline-flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900/60 px-3 py-1.5">
-            <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.75)]" />
             <span className="text-xs font-semibold tracking-wide text-slate-200">HF Copy Trader</span>
           </div>
           <nav className="flex flex-wrap items-center justify-center gap-5 text-[11px] uppercase tracking-wider text-slate-500">
